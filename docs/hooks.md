@@ -25,7 +25,7 @@ stdin → JSON (tool_name, tool_input) 受信
     ├── file_path を tool_input から抽出
     │       Edit    → tool_input["file_path"]
     │       Write   → tool_input["file_path"]
-    │       MultiEdit → tool_input["file_path"]
+    │       MultiEdit → tool_input["edits"][0]["file_path"]（先頭ファイルのみ対象）
     │
     ├── SQLite クエリ（ファイル特化・SNR フィルタ）
     │
@@ -72,6 +72,13 @@ def get_findings(file_path: str) -> list[dict]:
                   AND resolution = 'pending'
                   AND severity IN ('critical', 'high', 'warning')
                   AND created_at >= ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM findings f2
+                      WHERE f2.file_path       = findings.file_path
+                        AND f2.category        = findings.category
+                        AND f2.finding_summary = findings.finding_summary
+                        AND f2.resolution      = 'fixed'
+                  )
                 ORDER BY
                   CASE severity
                     WHEN 'critical' THEN 0
@@ -97,7 +104,7 @@ def get_findings(file_path: str) -> list[dict]:
                     SET injected_count = injected_count + 1,
                         last_injected  = ?
                     WHERE id IN ({placeholders})
-                """, [now] + ids)
+                """, (now,) + tuple(ids))
                 conn.commit()
             except sqlite3.OperationalError:
                 pass  # injected_count / last_injected カラム未追加時はスキップ
@@ -154,7 +161,30 @@ if __name__ == "__main__":
 
 ### settings.json 登録
 
-全 hook を登録した完全版（既存 hook と共存させる場合は配列に追記する）:
+#### Phase 1 用（まず PreToolUse のみ登録する）
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python C:\\Users\\Tenormusica\\claude-review-pdca\\hooks\\pre-tool-inject-findings.py"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+> **注意**: 既存 hook（claude-subconscious の `pretool_sync.ts` 等）が存在する場合は
+> `PreToolUse` 配列に **追記** して共存させること（上書き禁止）。
+
+#### Phase 2 以降の完全版（PostToolUse / SessionEnd を追加）
 
 ```json
 {
@@ -197,7 +227,7 @@ if __name__ == "__main__":
 
 > **注意**: SessionStart の pending 通知強化は既存の `review-feedback.py` スクリプトを差し替えるため、
 > 既存 SessionStart hook の設定を直接変更する（上記 JSON には含めていない）。
-> 既存 hook（claude-subconscious の `pretool_sync.ts` 等）が存在する場合は配列に追記して共存させること。
+> 既存 hook が存在する場合は各イベントの配列に追記して共存させること。
 
 ---
 
@@ -258,10 +288,13 @@ def main():
     if payload.get("tool_name") not in ("Edit", "Write", "MultiEdit"):
         sys.exit(0)
 
-    # カウンタ更新
+    # カウンタ更新（JSON 破損時は空辞書にリセット）
     data = {}
     if COUNTER_FILE.exists():
-        data = json.loads(COUNTER_FILE.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(COUNTER_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, ValueError):
+            data = {}
 
     session_id = payload.get("session_id", "unknown")
     count = data.get(session_id, 0) + 1
@@ -300,26 +333,27 @@ def main():
     if not CLAUDE_MD_PATH.exists():
         return
 
-    conn = sqlite3.connect(DB_PATH)
+    # with 構文でコネクションを自動クローズ
     try:
-        # Phase 1 ALTER TABLE 完了前は dismissed カラムが存在しないためスキップ
-        try:
-            rows = conn.execute("""
-                SELECT category, fp_reason, COUNT(*) AS cnt
-                FROM findings
-                WHERE dismissed = 1
-                  AND dismissed_by = 'user'
-                  AND fp_reason IS NOT NULL
-                  AND fp_reason != ''
-                GROUP BY category, fp_reason
-                HAVING cnt >= 2     -- 2回以上承認されたパターンのみ学習
-                ORDER BY cnt DESC
-                LIMIT 10
-            """).fetchall()
-        except sqlite3.OperationalError:
-            return  # dismissed カラム未追加時はスキップ
-    finally:
-        conn.close()
+        with sqlite3.connect(DB_PATH) as conn:
+            # Phase 1 ALTER TABLE 完了前は dismissed カラムが存在しないためスキップ
+            try:
+                rows = conn.execute("""
+                    SELECT category, fp_reason, COUNT(*) AS cnt
+                    FROM findings
+                    WHERE dismissed = 1
+                      AND dismissed_by = 'user'
+                      AND fp_reason IS NOT NULL
+                      AND fp_reason != ''
+                    GROUP BY category, fp_reason
+                    HAVING cnt >= 2     -- 2回以上承認されたパターンのみ学習
+                    ORDER BY cnt DESC
+                    LIMIT 10
+                """).fetchall()
+            except sqlite3.OperationalError:
+                return  # dismissed カラム未追加時はスキップ
+    except sqlite3.Error:
+        return
 
     if not rows:
         return
@@ -335,12 +369,11 @@ def main():
     content = CLAUDE_MD_PATH.read_text(encoding="utf-8")
 
     # 既存の自動追記ブロックを更新（重複防止）
-    # マーカーから次の ## セクションまでを正確に置換（後続セクション誤削除防止）
-    marker = "## 学習済み false positive パターン"
-    if marker in content:
+    # 行頭マッチで検索し、次の ## セクションまでを正確に置換（後続セクション誤削除防止）
+    if re.search(r'^## 学習済み false positive パターン', content, re.MULTILINE):
         pattern = re.compile(
-            r'## 学習済み false positive パターン.*?(?=\n## |\Z)',
-            re.DOTALL
+            r'^## 学習済み false positive パターン.*?(?=\n^## |\Z)',
+            re.DOTALL | re.MULTILINE
         )
         content = pattern.sub('', content).rstrip()
 

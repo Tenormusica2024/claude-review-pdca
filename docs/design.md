@@ -93,7 +93,7 @@ Edit のたびに /ifr を自動起動すると：
 AND dismissed = 0
 AND resolution = 'pending'
 AND severity IN ('critical', 'high', 'warning')
-AND created_at >= datetime('now', '-30 days')
+AND created_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-30 days')
 ```
 
 ## 注入文テンプレート
@@ -105,7 +105,7 @@ PreToolUse hook が生成するコンテキスト注入文の形式:
 【critical】{category}: {finding_summary}
 【high】{category}: {finding_summary}
 【warning】{category}: {finding_summary}
-（{N}件中上位{M}件を表示）
+（{len(findings)} 件を表示）
 これらを考慮して編集してください。同じアンチパターンの繰り返しは避けること。
 === END FINDINGS ===
 ```

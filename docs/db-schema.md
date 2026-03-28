@@ -95,7 +95,7 @@ WHERE file_path = :target_file
   AND dismissed = 0
   AND resolution = 'pending'
   AND severity IN ('critical', 'high', 'warning')
-  AND created_at >= datetime('now', '-30 days')
+  AND created_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-30 days')
 ORDER BY
   CASE severity
     WHEN 'critical' THEN 0
