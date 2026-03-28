@@ -112,8 +112,8 @@ def _get_project_root(file_path: str) -> str | None:
             return result.stdout.strip().replace("\\", "/")
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
-    # git が使えない場合は親ディレクトリをフォールバックとして使用
-    return str(Path(file_path).parent).replace("\\", "/")
+    # git 管理外ファイルはプロジェクト判定不能 → None を返して Phase B をスキップ
+    return None
 
 
 def get_findings(file_path: str, session_id: str) -> tuple[list[dict], bool]:
@@ -187,30 +187,21 @@ def get_findings(file_path: str, session_id: str) -> tuple[list[dict], bool]:
         project_root = _get_project_root(file_path)
         project_filter = (project_root + "/%") if project_root else None
 
+        if not project_filter:
+            return [], False  # プロジェクト判定不能時は他プロジェクト混入防止のため Phase B をスキップ
+
         try:
-            if project_filter:
-                fallback_rows = conn.execute("""
-                    SELECT id, severity, category, finding_summary
-                    FROM findings
-                    WHERE dismissed = 0
-                      AND resolution = 'pending'
-                      AND severity = 'critical'
-                      AND created_at >= ?
-                      AND replace(file_path, '\\', '/') LIKE ?
-                    ORDER BY id DESC
-                    LIMIT ?
-                """, (cutoff, project_filter, FALLBACK_LIMIT)).fetchall()
-            else:
-                fallback_rows = conn.execute("""
-                    SELECT id, severity, category, finding_summary
-                    FROM findings
-                    WHERE dismissed = 0
-                      AND resolution = 'pending'
-                      AND severity = 'critical'
-                      AND created_at >= ?
-                    ORDER BY id DESC
-                    LIMIT ?
-                """, (cutoff, FALLBACK_LIMIT)).fetchall()
+            fallback_rows = conn.execute("""
+                SELECT id, severity, category, finding_summary
+                FROM findings
+                WHERE dismissed = 0
+                  AND resolution = 'pending'
+                  AND severity = 'critical'
+                  AND created_at >= ?
+                  AND replace(file_path, '\\', '/') LIKE ?
+                ORDER BY id DESC
+                LIMIT ?
+            """, (cutoff, project_filter, FALLBACK_LIMIT)).fetchall()
         except sqlite3.OperationalError:
             return [], False
 
@@ -256,7 +247,7 @@ def main():
         sys.exit(0)
 
     file_path = tool_input.get("file_path") or tool_input.get("path")
-    # MultiEdit は edits リストの最初の要素から file_path を取る（先頭ファイルのみ対象）
+    # MultiEdit は top-level に file_path を持たないため edits[0] から取得する（先頭ファイルのみ対象）
     if not file_path and tool_name == "MultiEdit":
         edits = tool_input.get("edits", [])
         if edits:
@@ -371,11 +362,11 @@ try:
 except sqlite3.OperationalError:
     rows = None  # dismissed カラム未追加時はスキップ
 
-if rows and rows['critical'] > 0:
+if rows and (rows['critical'] or 0) > 0:
     print(f"🚨 CRITICAL findings: {rows['critical']} 件")
-if rows and rows['high'] > 0:
+if rows and (rows['high'] or 0) > 0:
     print(f"⚠️ HIGH findings: {rows['high']} 件")
-if rows and rows['total'] > 0:
+if rows and (rows['total'] or 0) > 0:
     print(f"（全 {rows['total']} 件: python review-feedback.py query --resolution pending）")
 ```
 
@@ -394,7 +385,7 @@ import sys
 import json
 from pathlib import Path
 
-COUNTER_FILE = Path.home() / ".claude" / "edit-counter.json"
+COUNTER_FILE = Path.home() / ".claude" / "edit-counter.txt"
 BATCH_THRESHOLD = 5
 
 
@@ -407,20 +398,21 @@ def main():
     if payload.get("tool_name") not in ("Edit", "Write", "MultiEdit"):
         sys.exit(0)
 
-    # カウンタ更新（JSON 破損時は空辞書にリセット）
-    data = {}
-    if COUNTER_FILE.exists():
-        try:
-            data = json.loads(COUNTER_FILE.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, ValueError):
-            data = {}
-
     session_id = payload.get("session_id", "")
     if not session_id:
-        sys.exit(0)  # session_id 不明時は unknown キーへの混在を避けるためスキップ
-    count = data.get(session_id, 0) + 1
-    data[session_id] = count
-    COUNTER_FILE.write_text(json.dumps(data), encoding="utf-8")
+        sys.exit(0)  # session_id 不明時はスキップ
+
+    # append-only: 1行=1イベント（read-modify-write 競合なし・JSON 破損リスクなし）
+    COUNTER_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(COUNTER_FILE, "a", encoding="utf-8") as f:
+        f.write(f"{session_id}\n")
+
+    # 現セッションの累計カウントを行数で算出
+    try:
+        lines = COUNTER_FILE.read_text(encoding="utf-8").splitlines()
+        count = lines.count(session_id)
+    except OSError:
+        count = 1
 
     # BATCH_THRESHOLD に達したら通知（レビュー提案のみ・強制実行しない）
     if count % BATCH_THRESHOLD == 0:
@@ -546,6 +538,7 @@ def main():
         + str(date.today())
         + "）\n"
         + "\n".join(new_entries)
+        + "\n"  # 末尾改行: エディタの「末尾改行なし」警告を防ぐ
     )
 
     content = claude_md_path.read_text(encoding="utf-8")
@@ -562,8 +555,8 @@ def main():
             if stripped.startswith(marker):
                 in_block = True
                 continue
-            if in_block and stripped.startswith("## "):
-                # 次のセクション開始で block 終了
+            if in_block and re.match(r'^#{1,6}\s', stripped):
+                # 次のセクション開始で block 終了（##スペースなし見出し等も含めて検出）
                 in_block = False
                 result_lines.append(line)
                 continue
