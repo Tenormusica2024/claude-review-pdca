@@ -50,9 +50,28 @@ from pathlib import Path
 from datetime import datetime, timedelta
 
 DB_PATH = Path.home() / ".claude" / "review-feedback.db"
+STATE_DIR = Path.home() / ".claude" / "inject-state"  # セッション別注入済みID管理ディレクトリ
 INJECT_LIMIT = 8
 FALLBACK_LIMIT = 5   # Phase B: プロジェクト横断 critical のみに絞るため小さめ
 STALE_DAYS = 30
+
+
+def _load_injected_ids(session_id: str) -> set[int]:
+    """セッション内で既に注入済みの finding ID セットを読み込む"""
+    state_file = STATE_DIR / f"{session_id}.json"
+    if state_file.exists():
+        try:
+            return set(json.loads(state_file.read_text(encoding="utf-8")))
+        except (json.JSONDecodeError, ValueError):
+            return set()
+    return set()
+
+
+def _save_injected_ids(session_id: str, ids: set[int]) -> None:
+    """注入済み finding ID をセッション状態ファイルに書き戻す"""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    state_file = STATE_DIR / f"{session_id}.json"
+    state_file.write_text(json.dumps(list(ids)), encoding="utf-8")
 
 
 def _update_injection_tracking(conn: sqlite3.Connection, findings: list[dict], now: str) -> None:
@@ -71,17 +90,23 @@ def _update_injection_tracking(conn: sqlite3.Connection, findings: list[dict], n
         pass  # injected_count / last_injected カラム未追加時はスキップ
 
 
-def get_findings(file_path: str) -> tuple[list[dict], bool]:
+def get_findings(file_path: str, session_id: str) -> tuple[list[dict], bool]:
     """
     findings と is_fallback フラグを返す。
     is_fallback=False: Phase A（ファイル特化）
     is_fallback=True : Phase B（プロジェクト横断 critical のみ・新規ファイル用フォールバック）
+
+    セッション内 dedup: 同一セッションで既に注入した finding は再注入しない。
+    各ツール呼び出しは独立プロセスなのでファイルベースで状態を管理する。
     """
     if not DB_PATH.exists():
         return [], False
 
     cutoff = (datetime.now() - timedelta(days=STALE_DAYS)).isoformat()
     now = datetime.now().isoformat()
+
+    # セッション内で既注入の ID を除外（重複注入によるトークン積み上がり防止）
+    already_injected = _load_injected_ids(session_id)
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
@@ -117,10 +142,12 @@ def get_findings(file_path: str) -> tuple[list[dict], bool]:
         except sqlite3.OperationalError:
             return [], False  # dismissed カラム未追加時はスキップ
 
-        findings = [dict(r) for r in rows]
+        # セッション内 dedup: 既注入 ID を除外
+        findings = [dict(r) for r in rows if dict(r)["id"] not in already_injected]
         if findings:
             # Phase 1 で ALTER TABLE が完了するまでカラムが存在しないため OperationalError をスキップ
             _update_injection_tracking(conn, findings, now)
+            _save_injected_ids(session_id, already_injected | {f["id"] for f in findings})
             return findings, False
 
         # --- Phase B: プロジェクト横断 critical フォールバック（新規ファイル・findings なしファイル用）---
@@ -139,9 +166,11 @@ def get_findings(file_path: str) -> tuple[list[dict], bool]:
         except sqlite3.OperationalError:
             return [], False
 
-        fallback = [dict(r) for r in fallback_rows]
+        # セッション内 dedup（Phase B も同様に適用）
+        fallback = [dict(r) for r in fallback_rows if dict(r)["id"] not in already_injected]
         if fallback:
             _update_injection_tracking(conn, fallback, now)
+            _save_injected_ids(session_id, already_injected | {f["id"] for f in fallback})
             return fallback, True
         return [], False
     finally:
@@ -186,7 +215,8 @@ def main():
     if not file_path:
         sys.exit(0)
 
-    findings, is_fallback = get_findings(file_path)
+    session_id = payload.get("session_id", "unknown")
+    findings, is_fallback = get_findings(file_path, session_id)
     if not findings:
         sys.exit(0)
 
@@ -355,16 +385,19 @@ def main():
 ```python
 #!/usr/bin/env python3
 """
-SessionEnd hook: ユーザー承認済み dismissed パターンを CLAUDE.md に追記
+SessionEnd hook: ユーザー承認済み dismissed パターンを CLAUDE.md に追記 + inject-state クリーンアップ
 """
 import re
 import sqlite3
+import time
 from pathlib import Path
 from datetime import date
 
 DB_PATH = Path.home() / ".claude" / "review-feedback.db"
 # グローバル CLAUDE.md ではなくセッションのカレントプロジェクト固有の CLAUDE.md に書く
 CLAUDE_MD_PATH = Path.cwd() / "CLAUDE.md"
+# PreToolUse hook のセッション別 dedup ファイル管理ディレクトリ
+STATE_DIR = Path.home() / ".claude" / "inject-state"
 
 def main():
     if not DB_PATH.exists():
@@ -419,6 +452,20 @@ def main():
 
     CLAUDE_MD_PATH.write_text(content + block, encoding="utf-8")
 
+
+def _cleanup_inject_state() -> None:
+    """24時間以上古いセッション dedup ファイルを削除してストレージを管理する"""
+    if not STATE_DIR.exists():
+        return
+    cutoff = time.time() - 86400  # 24時間
+    for f in STATE_DIR.glob("*.json"):
+        try:
+            if f.stat().st_mtime < cutoff:
+                f.unlink()
+        except OSError:
+            pass  # 削除失敗は無視（別プロセスが使用中の可能性）
+
 if __name__ == "__main__":
+    _cleanup_inject_state()
     main()
 ```
