@@ -34,6 +34,7 @@ claude-review-pdca/
 編集対象ファイルに紐づく findings のみ、LIMIT 8 件に絞って注入する。
 
 ```sql
+-- ⚠️ dismissed カラムは Phase 1 ALTER TABLE 完了後に有効（追加前は AND dismissed = 0 を除くこと）
 SELECT id, severity, category, finding_summary
 FROM findings
 WHERE file_path = :target_file
@@ -83,13 +84,14 @@ Edit のたびに /ifr を自動起動すると：
 
 注入時に除外するもの:
 - dismissed = 1（ユーザー承認済みの不要 finding）
-- resolution IS NOT NULL（解決済み）
+- resolution != 'pending'（解決済み・accepted 等）
 - severity = 'info'（低優先度。critical/high/warning のみ注入）
 - 直近 30 日以上前の finding（陳腐化リスク）
 
 ```sql
+-- ⚠️ dismissed カラムは Phase 1 ALTER TABLE 完了後に有効（追加前は AND dismissed = 0 を除くこと）
 AND dismissed = 0
-AND resolution IS NULL
+AND resolution = 'pending'
 AND severity IN ('critical', 'high', 'warning')
 AND created_at >= datetime('now', '-30 days')
 ```
@@ -100,9 +102,9 @@ PreToolUse hook が生成するコンテキスト注入文の形式:
 
 ```
 === PAST FINDINGS: {file_path} ===
-【critical】{category}: {summary}
-【high】{category}: {summary}
-【warning】{category}: {summary}
+【critical】{category}: {finding_summary}
+【high】{category}: {finding_summary}
+【warning】{category}: {finding_summary}
 （{N}件中上位{M}件を表示）
 これらを考慮して編集してください。同じアンチパターンの繰り返しは避けること。
 === END FINDINGS ===
@@ -116,7 +118,7 @@ PreToolUse hook が生成するコンテキスト注入文の形式:
     ▼ findings 生成
 review-feedback.py record
     │
-    ▼ INSERT INTO review_feedback
+    ▼ INSERT INTO findings
 review-feedback.db (SQLite)
     │
     ├──▶ PreToolUse hook (pre-tool-inject-findings.py)

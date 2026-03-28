@@ -69,6 +69,8 @@ CREATE TABLE findings (
 
 ## インデックス（注入クエリ高速化）
 
+> **注意**: `dismissed` カラムは Phase 1 の ALTER TABLE 完了後に追加される。それ以前は下記インデックスは作成しないこと。
+
 ```sql
 -- PreToolUse hook の WHERE file_path = ? クエリを高速化
 CREATE INDEX IF NOT EXISTS idx_file_path
@@ -80,6 +82,9 @@ CREATE INDEX IF NOT EXISTS idx_pending
 ```
 
 ## 標準クエリ集
+
+> **注意**: 以下のクエリは Phase 1 の ALTER TABLE 完了後に有効になる。
+> `dismissed` / `injected_count` / `last_injected` カラム追加前は `AND dismissed = 0` を除いて実行すること。
 
 ### ファイル特化注入クエリ（PreToolUse hook 用）
 

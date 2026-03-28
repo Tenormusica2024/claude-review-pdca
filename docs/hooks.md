@@ -62,37 +62,45 @@ def get_findings(file_path: str) -> list[dict]:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     try:
-        rows = conn.execute("""
-            SELECT id, severity, category, finding_summary
-            FROM findings
-            WHERE file_path = ?
-              AND dismissed = 0
-              AND resolution = 'pending'
-              AND severity IN ('critical', 'high', 'warning')
-              AND created_at >= ?
-            ORDER BY
-              CASE severity
-                WHEN 'critical' THEN 0
-                WHEN 'high'     THEN 1
-                WHEN 'warning'  THEN 2
-                ELSE 3
-              END,
-              id DESC
-            LIMIT ?
-        """, (file_path, cutoff, INJECT_LIMIT)).fetchall()
+        # ⚠️ dismissed カラムは Phase 1 ALTER TABLE 完了後に有効（追加前は OperationalError をスキップして空を返す）
+        try:
+            rows = conn.execute("""
+                SELECT id, severity, category, finding_summary
+                FROM findings
+                WHERE file_path = ?
+                  AND dismissed = 0
+                  AND resolution = 'pending'
+                  AND severity IN ('critical', 'high', 'warning')
+                  AND created_at >= ?
+                ORDER BY
+                  CASE severity
+                    WHEN 'critical' THEN 0
+                    WHEN 'high'     THEN 1
+                    WHEN 'warning'  THEN 2
+                    ELSE 3
+                  END,
+                  id DESC
+                LIMIT ?
+            """, (file_path, cutoff, INJECT_LIMIT)).fetchall()
+        except sqlite3.OperationalError:
+            return []  # dismissed カラム未追加時はスキップ
         findings = [dict(r) for r in rows]
 
         # 注入トラッキング: 注入した finding の injected_count と last_injected を更新
+        # Phase 1 で ALTER TABLE が完了するまでカラムが存在しないため OperationalError をスキップ
         if findings:
             ids = [f["id"] for f in findings]
             placeholders = ",".join("?" * len(ids))
-            conn.execute(f"""
-                UPDATE findings
-                SET injected_count = injected_count + 1,
-                    last_injected  = ?
-                WHERE id IN ({placeholders})
-            """, [now] + ids)
-            conn.commit()
+            try:
+                conn.execute(f"""
+                    UPDATE findings
+                    SET injected_count = injected_count + 1,
+                        last_injected  = ?
+                    WHERE id IN ({placeholders})
+                """, [now] + ids)
+                conn.commit()
+            except sqlite3.OperationalError:
+                pass  # injected_count / last_injected カラム未追加時はスキップ
 
         return findings
     finally:
@@ -123,6 +131,11 @@ def main():
         sys.exit(0)
 
     file_path = tool_input.get("file_path") or tool_input.get("path")
+    # MultiEdit は edits リストの最初の要素から file_path を取る
+    if not file_path and tool_name == "MultiEdit":
+        edits = tool_input.get("edits", [])
+        if edits:
+            file_path = edits[0].get("file_path")
     if not file_path:
         sys.exit(0)
 
@@ -141,6 +154,8 @@ if __name__ == "__main__":
 
 ### settings.json 登録
 
+全 hook を登録した完全版（既存 hook と共存させる場合は配列に追記する）:
+
 ```json
 {
   "hooks": {
@@ -154,10 +169,35 @@ if __name__ == "__main__":
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python C:\\Users\\Tenormusica\\claude-review-pdca\\hooks\\post-tool-edit-counter.py"
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python C:\\Users\\Tenormusica\\claude-review-pdca\\hooks\\session-end-learn.py"
+          }
+        ]
+      }
     ]
   }
 }
 ```
+
+> **注意**: SessionStart の pending 通知強化は既存の `review-feedback.py` スクリプトを差し替えるため、
+> 既存 SessionStart hook の設定を直接変更する（上記 JSON には含めていない）。
+> 既存 hook（claude-subconscious の `pretool_sync.ts` 等）が存在する場合は配列に追記して共存させること。
 
 ---
 
@@ -168,21 +208,25 @@ if __name__ == "__main__":
 
 ```python
 # 改善版（既存スクリプトに差し替え）
+# ⚠️ dismissed カラムは Phase 1 ALTER TABLE 完了後に有効（追加前は AND dismissed = 0 を除くこと）
 conn.row_factory = sqlite3.Row
-rows = conn.execute("""
-    SELECT
-      COUNT(*) AS total,
-      SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) AS critical,
-      SUM(CASE WHEN severity = 'high'     THEN 1 ELSE 0 END) AS high
-    FROM findings
-    WHERE dismissed = 0 AND resolution = 'pending'
-""").fetchone()
+try:
+    rows = conn.execute("""
+        SELECT
+          COUNT(*) AS total,
+          SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) AS critical,
+          SUM(CASE WHEN severity = 'high'     THEN 1 ELSE 0 END) AS high
+        FROM findings
+        WHERE dismissed = 0 AND resolution = 'pending'
+    """).fetchone()
+except sqlite3.OperationalError:
+    rows = None  # dismissed カラム未追加時はスキップ
 
-if rows['critical'] > 0:
+if rows and rows['critical'] > 0:
     print(f"🚨 CRITICAL findings: {rows['critical']} 件")
-if rows['high'] > 0:
+if rows and rows['high'] > 0:
     print(f"⚠️ HIGH findings: {rows['high']} 件")
-if rows['total'] > 0:
+if rows and rows['total'] > 0:
     print(f"（全 {rows['total']} 件: python review-feedback.py query --resolution pending）")
 ```
 
@@ -222,7 +266,7 @@ def main():
     session_id = payload.get("session_id", "unknown")
     count = data.get(session_id, 0) + 1
     data[session_id] = count
-    COUNTER_FILE.write_text(json.dumps(data))
+    COUNTER_FILE.write_text(json.dumps(data), encoding="utf-8")
 
     # BATCH_THRESHOLD に達したら通知（レビュー提案のみ・強制実行しない）
     if count % BATCH_THRESHOLD == 0:
@@ -240,6 +284,7 @@ def main():
 """
 SessionEnd hook: ユーザー承認済み dismissed パターンを CLAUDE.md に追記
 """
+import re
 import sqlite3
 from pathlib import Path
 from datetime import date
@@ -257,18 +302,22 @@ def main():
 
     conn = sqlite3.connect(DB_PATH)
     try:
-        rows = conn.execute("""
-            SELECT category, fp_reason, COUNT(*) AS cnt
-            FROM findings
-            WHERE dismissed = 1
-              AND dismissed_by = 'user'
-              AND fp_reason IS NOT NULL
-              AND fp_reason != ''
-            GROUP BY category, fp_reason
-            HAVING cnt >= 2     -- 2回以上承認されたパターンのみ学習
-            ORDER BY cnt DESC
-            LIMIT 10
-        """).fetchall()
+        # Phase 1 ALTER TABLE 完了前は dismissed カラムが存在しないためスキップ
+        try:
+            rows = conn.execute("""
+                SELECT category, fp_reason, COUNT(*) AS cnt
+                FROM findings
+                WHERE dismissed = 1
+                  AND dismissed_by = 'user'
+                  AND fp_reason IS NOT NULL
+                  AND fp_reason != ''
+                GROUP BY category, fp_reason
+                HAVING cnt >= 2     -- 2回以上承認されたパターンのみ学習
+                ORDER BY cnt DESC
+                LIMIT 10
+            """).fetchall()
+        except sqlite3.OperationalError:
+            return  # dismissed カラム未追加時はスキップ
     finally:
         conn.close()
 
@@ -283,12 +332,17 @@ def main():
         + "\n".join(new_entries)
     )
 
-    content = CLAUDE_MD_PATH.read_text(encoding="utf-8") if CLAUDE_MD_PATH.exists() else ""
+    content = CLAUDE_MD_PATH.read_text(encoding="utf-8")
 
     # 既存の自動追記ブロックを更新（重複防止）
+    # マーカーから次の ## セクションまでを正確に置換（後続セクション誤削除防止）
     marker = "## 学習済み false positive パターン"
     if marker in content:
-        content = content[:content.index(marker)].rstrip()
+        pattern = re.compile(
+            r'## 学習済み false positive パターン.*?(?=\n## |\Z)',
+            re.DOTALL
+        )
+        content = pattern.sub('', content).rstrip()
 
     CLAUDE_MD_PATH.write_text(content + block, encoding="utf-8")
 
