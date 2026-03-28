@@ -27,11 +27,13 @@ stdin → JSON (tool_name, tool_input) 受信
     │       Write   → tool_input["file_path"]
     │       MultiEdit → tool_input["edits"][0]["file_path"]（先頭ファイルのみ対象）
     │
-    ├── SQLite クエリ（ファイル特化・SNR フィルタ）
+    ├── Phase A: ファイル特化クエリ（SNR フィルタ: critical/high/warning・30日・NOT EXISTS）
+    │       1件以上 → 注入文を stdout に出力 → Claude のコンテキストに追加
+    │       0件     → Phase B へ
     │
-    ├── 0件 → exit 0（何も注入しない）
-    │
-    └── N件 → 注入文を stdout に出力 → Claude のコンテキストに追加
+    └── Phase B: プロジェクト横断フォールバック（severity=critical のみ・LIMIT 5）
+            1件以上 → "PROJECT-WIDE CRITICAL PATTERNS" として注入
+            0件     → exit 0（何も注入しない）
 ```
 
 ### 実装（hooks/pre-tool-inject-findings.py）
@@ -49,12 +51,34 @@ from datetime import datetime, timedelta
 
 DB_PATH = Path.home() / ".claude" / "review-feedback.db"
 INJECT_LIMIT = 8
+FALLBACK_LIMIT = 5   # Phase B: プロジェクト横断 critical のみに絞るため小さめ
 STALE_DAYS = 30
 
 
-def get_findings(file_path: str) -> list[dict]:
+def _update_injection_tracking(conn: sqlite3.Connection, findings: list[dict], now: str) -> None:
+    """注入した finding の injected_count / last_injected を更新（カラム未追加時はスキップ）"""
+    ids = [f["id"] for f in findings]
+    placeholders = ",".join("?" * len(ids))
+    try:
+        conn.execute(f"""
+            UPDATE findings
+            SET injected_count = injected_count + 1,
+                last_injected  = ?
+            WHERE id IN ({placeholders})
+        """, (now,) + tuple(ids))
+        conn.commit()
+    except sqlite3.OperationalError:
+        pass  # injected_count / last_injected カラム未追加時はスキップ
+
+
+def get_findings(file_path: str) -> tuple[list[dict], bool]:
+    """
+    findings と is_fallback フラグを返す。
+    is_fallback=False: Phase A（ファイル特化）
+    is_fallback=True : Phase B（プロジェクト横断 critical のみ・新規ファイル用フォールバック）
+    """
     if not DB_PATH.exists():
-        return []
+        return [], False
 
     cutoff = (datetime.now() - timedelta(days=STALE_DAYS)).isoformat()
     now = datetime.now().isoformat()
@@ -62,6 +86,7 @@ def get_findings(file_path: str) -> list[dict]:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     try:
+        # --- Phase A: ファイル特化クエリ ---
         # ⚠️ dismissed カラムは Phase 1 ALTER TABLE 完了後に有効（追加前は OperationalError をスキップして空を返す）
         try:
             rows = conn.execute("""
@@ -90,32 +115,47 @@ def get_findings(file_path: str) -> list[dict]:
                 LIMIT ?
             """, (file_path, cutoff, INJECT_LIMIT)).fetchall()
         except sqlite3.OperationalError:
-            return []  # dismissed カラム未追加時はスキップ
+            return [], False  # dismissed カラム未追加時はスキップ
+
         findings = [dict(r) for r in rows]
-
-        # 注入トラッキング: 注入した finding の injected_count と last_injected を更新
-        # Phase 1 で ALTER TABLE が完了するまでカラムが存在しないため OperationalError をスキップ
         if findings:
-            ids = [f["id"] for f in findings]
-            placeholders = ",".join("?" * len(ids))
-            try:
-                conn.execute(f"""
-                    UPDATE findings
-                    SET injected_count = injected_count + 1,
-                        last_injected  = ?
-                    WHERE id IN ({placeholders})
-                """, (now,) + tuple(ids))
-                conn.commit()
-            except sqlite3.OperationalError:
-                pass  # injected_count / last_injected カラム未追加時はスキップ
+            # Phase 1 で ALTER TABLE が完了するまでカラムが存在しないため OperationalError をスキップ
+            _update_injection_tracking(conn, findings, now)
+            return findings, False
 
-        return findings
+        # --- Phase B: プロジェクト横断 critical フォールバック（新規ファイル・findings なしファイル用）---
+        # SNR 維持のため severity = 'critical' のみに絞り LIMIT も小さくする
+        try:
+            fallback_rows = conn.execute("""
+                SELECT id, severity, category, finding_summary
+                FROM findings
+                WHERE dismissed = 0
+                  AND resolution = 'pending'
+                  AND severity = 'critical'
+                  AND created_at >= ?
+                ORDER BY id DESC
+                LIMIT ?
+            """, (cutoff, FALLBACK_LIMIT)).fetchall()
+        except sqlite3.OperationalError:
+            return [], False
+
+        fallback = [dict(r) for r in fallback_rows]
+        if fallback:
+            _update_injection_tracking(conn, fallback, now)
+            return fallback, True
+        return [], False
     finally:
         conn.close()
 
 
-def format_injection(file_path: str, findings: list[dict]) -> str:
-    lines = [f"=== PAST FINDINGS: {file_path} ==="]
+def format_injection(file_path: str, findings: list[dict], is_fallback: bool = False) -> str:
+    if is_fallback:
+        # Phase B: 新規ファイル用（プロジェクト横断 critical のみ）
+        header = f"=== PROJECT-WIDE CRITICAL PATTERNS (新規ファイル: {file_path}) ==="
+    else:
+        # Phase A: ファイル特化
+        header = f"=== PAST FINDINGS: {file_path} ==="
+    lines = [header]
     for f in findings:
         lines.append(f"【{f['severity']}】{f['category'] or '?'}: {f['finding_summary']}")
     lines.append(f"（{len(findings)} 件を表示）")
@@ -138,7 +178,7 @@ def main():
         sys.exit(0)
 
     file_path = tool_input.get("file_path") or tool_input.get("path")
-    # MultiEdit は edits リストの最初の要素から file_path を取る
+    # MultiEdit は edits リストの最初の要素から file_path を取る（先頭ファイルのみ対象）
     if not file_path and tool_name == "MultiEdit":
         edits = tool_input.get("edits", [])
         if edits:
@@ -146,12 +186,12 @@ def main():
     if not file_path:
         sys.exit(0)
 
-    findings = get_findings(file_path)
+    findings, is_fallback = get_findings(file_path)
     if not findings:
         sys.exit(0)
 
     # stdout に注入文を出力 → Claude Code がコンテキストに追加する
-    print(format_injection(file_path, findings))
+    print(format_injection(file_path, findings, is_fallback))
     sys.exit(0)
 
 
