@@ -480,17 +480,26 @@ def _find_claude_md(payload: dict) -> Path | None:
 
 def _cleanup_inject_state() -> None:
     """24時間以上古いセッション dedup ファイルを削除してストレージを管理する"""
-    if not STATE_DIR.exists():
-        return
-    cutoff = time.time() - 86400  # 24時間
-    # .txt（現行形式）と .json（旧形式の残骸）の両方を対象にする
-    for pattern in ("*.txt", "*.json"):
-        for f in STATE_DIR.glob(pattern):
-            try:
-                if f.stat().st_mtime < cutoff:
-                    f.unlink()
-            except OSError:
-                pass  # 削除失敗は無視（別プロセスが使用中の可能性）
+    if STATE_DIR.exists():
+        cutoff = time.time() - 86400  # 24時間
+        # .txt（現行形式）と .json（旧形式の残骸）の両方を対象にする
+        for pattern in ("*.txt", "*.json"):
+            for f in STATE_DIR.glob(pattern):
+                try:
+                    if f.stat().st_mtime < cutoff:
+                        f.unlink()
+                except OSError:
+                    pass  # 削除失敗は無視（別プロセスが使用中の可能性）
+
+    # edit-counter.txt のローテーション（10000行超で古い半分を削除）
+    counter_file = Path.home() / ".claude" / "edit-counter.txt"
+    if counter_file.exists():
+        try:
+            lines = counter_file.read_text(encoding="utf-8").splitlines()
+            if len(lines) > 10000:
+                counter_file.write_text("\n".join(lines[-5000:]) + "\n", encoding="utf-8")
+        except OSError:
+            pass
 
 
 def main():
@@ -562,7 +571,7 @@ def main():
                 continue
             if not in_block:
                 result_lines.append(line)
-        content = "".join(result_lines).rstrip()
+        content = "".join(result_lines).rstrip("\r\n")
 
     claude_md_path.write_text(content + block, encoding="utf-8")
 
