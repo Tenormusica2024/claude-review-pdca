@@ -35,17 +35,17 @@ Claude が代理で実行することは禁止。
 
 ### ケース2: 完全重複の自動スキップ（注入時のみ・DB は変更しない）
 
-同一ファイル、同一カテゴリ、同一 summary が既に `resolution = 'fixed'` の場合、
+同一ファイル、同一カテゴリ、同一 finding_summary が既に `resolution = 'fixed'` の場合、
 **注入をスキップするだけ**（dismissed フラグは立てない）。
 
 ```sql
 -- 注入クエリに追加する重複チェック
 AND NOT EXISTS (
-    SELECT 1 FROM review_feedback r2
-    WHERE r2.file_path = review_feedback.file_path
-      AND r2.category  = review_feedback.category
-      AND r2.summary   = review_feedback.summary
-      AND r2.resolution = 'fixed'
+    SELECT 1 FROM findings f2
+    WHERE f2.file_path       = findings.file_path
+      AND f2.category        = findings.category
+      AND f2.finding_summary = findings.finding_summary
+      AND f2.resolution      = 'fixed'
 )
 ```
 

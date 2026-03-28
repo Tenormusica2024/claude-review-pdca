@@ -57,18 +57,19 @@ def get_findings(file_path: str) -> list[dict]:
         return []
 
     cutoff = (datetime.now() - timedelta(days=STALE_DAYS)).isoformat()
+    now = datetime.now().isoformat()
 
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     try:
         rows = conn.execute("""
-            SELECT severity, category, summary
-            FROM review_feedback
+            SELECT id, severity, category, finding_summary
+            FROM findings
             WHERE file_path = ?
               AND dismissed = 0
-              AND resolution IS NULL
+              AND resolution = 'pending'
               AND severity IN ('critical', 'high', 'warning')
-              AND (created_at IS NULL OR created_at >= ?)
+              AND created_at >= ?
             ORDER BY
               CASE severity
                 WHEN 'critical' THEN 0
@@ -79,7 +80,21 @@ def get_findings(file_path: str) -> list[dict]:
               id DESC
             LIMIT ?
         """, (file_path, cutoff, INJECT_LIMIT)).fetchall()
-        return [dict(r) for r in rows]
+        findings = [dict(r) for r in rows]
+
+        # 注入トラッキング: 注入した finding の injected_count と last_injected を更新
+        if findings:
+            ids = [f["id"] for f in findings]
+            placeholders = ",".join("?" * len(ids))
+            conn.execute(f"""
+                UPDATE findings
+                SET injected_count = injected_count + 1,
+                    last_injected  = ?
+                WHERE id IN ({placeholders})
+            """, [now] + ids)
+            conn.commit()
+
+        return findings
     finally:
         conn.close()
 
@@ -87,7 +102,7 @@ def get_findings(file_path: str) -> list[dict]:
 def format_injection(file_path: str, findings: list[dict]) -> str:
     lines = [f"=== PAST FINDINGS: {file_path} ==="]
     for f in findings:
-        lines.append(f"【{f['severity']}】{f['category'] or '?'}: {f['summary']}")
+        lines.append(f"【{f['severity']}】{f['category'] or '?'}: {f['finding_summary']}")
     lines.append(f"（{len(findings)} 件を表示）")
     lines.append("これらを考慮して編集してください。同じアンチパターンの繰り返しは避けること。")
     lines.append("=== END FINDINGS ===")
@@ -153,13 +168,14 @@ if __name__ == "__main__":
 
 ```python
 # 改善版（既存スクリプトに差し替え）
+conn.row_factory = sqlite3.Row
 rows = conn.execute("""
     SELECT
       COUNT(*) AS total,
       SUM(CASE WHEN severity = 'critical' THEN 1 ELSE 0 END) AS critical,
       SUM(CASE WHEN severity = 'high'     THEN 1 ELSE 0 END) AS high
-    FROM review_feedback
-    WHERE dismissed = 0 AND resolution IS NULL
+    FROM findings
+    WHERE dismissed = 0 AND resolution = 'pending'
 """).fetchone()
 
 if rows['critical'] > 0:
@@ -192,7 +208,7 @@ BATCH_THRESHOLD = 5
 def main():
     try:
         payload = json.loads(sys.stdin.read())
-    except:
+    except Exception:
         sys.exit(0)
 
     if payload.get("tool_name") not in ("Edit", "Write", "MultiEdit"):
@@ -201,7 +217,7 @@ def main():
     # カウンタ更新
     data = {}
     if COUNTER_FILE.exists():
-        data = json.loads(COUNTER_FILE.read_text())
+        data = json.loads(COUNTER_FILE.read_text(encoding="utf-8"))
 
     session_id = payload.get("session_id", "unknown")
     count = data.get(session_id, 0) + 1
@@ -229,26 +245,32 @@ from pathlib import Path
 from datetime import date
 
 DB_PATH = Path.home() / ".claude" / "review-feedback.db"
-CLAUDE_MD_PATH = Path.home() / "CLAUDE.md"
+# グローバル CLAUDE.md ではなくセッションのカレントプロジェクト固有の CLAUDE.md に書く
+CLAUDE_MD_PATH = Path.cwd() / "CLAUDE.md"
 
 def main():
     if not DB_PATH.exists():
         return
+    # プロジェクト固有の CLAUDE.md が存在しない場合はスキップ（グローバル CLAUDE.md は書かない）
+    if not CLAUDE_MD_PATH.exists():
+        return
 
     conn = sqlite3.connect(DB_PATH)
-    rows = conn.execute("""
-        SELECT category, fp_reason, COUNT(*) AS cnt
-        FROM review_feedback
-        WHERE dismissed = 1
-          AND dismissed_by = 'user'
-          AND fp_reason IS NOT NULL
-          AND fp_reason != ''
-        GROUP BY category, fp_reason
-        HAVING cnt >= 2     -- 2回以上承認されたパターンのみ学習
-        ORDER BY cnt DESC
-        LIMIT 10
-    """).fetchall()
-    conn.close()
+    try:
+        rows = conn.execute("""
+            SELECT category, fp_reason, COUNT(*) AS cnt
+            FROM findings
+            WHERE dismissed = 1
+              AND dismissed_by = 'user'
+              AND fp_reason IS NOT NULL
+              AND fp_reason != ''
+            GROUP BY category, fp_reason
+            HAVING cnt >= 2     -- 2回以上承認されたパターンのみ学習
+            ORDER BY cnt DESC
+            LIMIT 10
+        """).fetchall()
+    finally:
+        conn.close()
 
     if not rows:
         return

@@ -17,7 +17,7 @@ claude-review-pdca/
 │   ├── pre-tool-inject-findings.py   # PreToolUse: ファイル特化注入
 │   └── session-end-learn.py          # SessionEnd: dismissed → CLAUDE.md 反映
 ├── scripts/
-│   └── batch-review-trigger.py       # 5編集ごとのバッチレビュー起動
+│   └── batch-review-trigger.py       # [Phase 2] 5編集ごとのバッチレビュー起動（未実装）
 └── docs/
     ├── design.md        （本ファイル）
     ├── db-schema.md
@@ -34,11 +34,11 @@ claude-review-pdca/
 編集対象ファイルに紐づく findings のみ、LIMIT 8 件に絞って注入する。
 
 ```sql
-SELECT severity, category, summary
-FROM review_feedback
+SELECT id, severity, category, finding_summary
+FROM findings
 WHERE file_path = :target_file
   AND dismissed = 0
-  AND resolution IS NULL
+  AND resolution = 'pending'
 ORDER BY
   CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END,
   id DESC
@@ -52,7 +52,7 @@ Claude が自分のコードのレビュー findings を却下するのは「シ
 
 → **dismissed は必ずユーザーが明示的に承認する。Claude の自己判断での dismissed 処理は禁止。**
 
-唯一の例外: 全く同一の finding（同ファイル・同カテゴリ・同 summary）が既に resolved の場合のみ自動スキップ。
+唯一の例外: 全く同一の finding（同ファイル・同カテゴリ・同 summary）が既に `resolution = 'fixed'` の場合のみ自動スキップ。dismissed finding は対象外。
 
 ### 3. バッチレビュー（PostToolUse 毎回トリガー禁止）
 
