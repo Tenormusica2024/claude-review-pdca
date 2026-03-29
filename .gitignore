@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .letta/
+.playwright-cli/
+docs/.playwright-cli/
+docs/_b64.txt
