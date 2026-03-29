@@ -42,11 +42,14 @@ stdin → JSON (tool_name, tool_input) 受信
 
 主な実装ポイント:
 - **Phase A パス正規化**: `replace(file_path, '\\', '/') = ?` でバックスラッシュ不一致を防止
-- **NOT EXISTS 正規化**: サブクエリ内の `f2.file_path = findings.file_path` も両辺 `replace()` 適用
+- **Phase A repo_root スコープ**: `replace(COALESCE(repo_root, ''), '\\', '/') = ?` で他プロジェクトの findings を除外
+- **Phase A 旧データフォールバック**: `OR repo_root IS NULL` で Phase 4 以前の INSERT（repo_root 未設定）にもマッチ
+- **NOT EXISTS 正規化**: サブクエリ内の `f2.file_path = findings.file_path` も両辺 `replace()` 適用。`f2.resolution IN ('accepted', 'fixed')` で解決済みパターンの再注入を防止
 - **MultiEdit 全 edits 対応**: 先頭ファイルのみではなく全 edits から重複除去して複数ファイルを対象にする
 - **session_id 必須**: 空文字列の場合は注入をスキップ（SNR 破壊防止）
 - **セッション内 dedup**: `~/.claude/inject-state/{session_id}.txt` に注入済み ID を append-only で管理
 - **Phase B depth check**: git root が 4 セグメント未満（ドライブルート等）の場合はスキップ
+- **Phase B repo_root 再利用**: Phase A で取得した `repo_root` を Phase B でも使い回す（`_get_project_root` の二重サブプロセス呼び出しを回避）
 - **cutoff フォーマット**: `strftime('%Y-%m-%dT%H:%M:%S')` で DB の秒精度 created_at と統一
 
 ### settings.json 登録
@@ -170,7 +173,10 @@ if rows and (rows['total'] or 0) > 0:
 現行実装を参照: `hooks/session-end-learn.py`
 
 主な実装ポイント:
-- **CLAUDE.md 探索**: `payload["cwd"]` → `git rev-parse --show-toplevel` → `Path.cwd()` の 3 段フォールバック
+- **CLAUDE.md 探索**: `_find_claude_md()` が `tuple[Path | None, str | None]` を返す（CLAUDE.md パス + repo_root）
+  - 探索順: `payload["cwd"]` → `git rev-parse --show-toplevel` → `Path.cwd()` の 3 段フォールバック
+- **repo_root スコープ付き学習クエリ**: repo_root が取得できた場合は `replace(COALESCE(repo_root, ''), '\\', '/') = ?` で同一リポジトリの findings のみ学習対象にする。取得できない場合はフィルタなし（git 管理外プロジェクト用フォールバック）
+- **severity ガード**: `severity != 'critical'` で critical を学習対象から除外（false positive パターンとして学習すべきでない）
 - **ホームディレクトリ保護**: `cwd` がホームディレクトリの場合に `~/CLAUDE.md` を掴むのを防ぐチェックを追加
 - **ブロックヘッダー**: `## 学習済み false positive パターン（自動生成）`（日付ラベルなし）
 - **アトミック書き込み**: `tempfile.NamedTemporaryFile` → `os.replace()` で lost update を防止
