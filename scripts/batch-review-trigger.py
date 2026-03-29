@@ -50,8 +50,9 @@ def _get_edit_count(session_id: str) -> int:
         return 0
     try:
         lines = counter_file.read_text(encoding="utf-8").splitlines()
-        # append-only 形式: 1 append = 1行（空文字列）
-        return sum(1 for line in lines if line == "")
+        # append-only 形式: 1 append = 1行（'e' 固定文字列）
+        # post-tool-edit-counter.py が "e\n" を append するため、非空行をカウントする
+        return sum(1 for line in lines if line)
     except OSError:
         return 0
 
@@ -65,7 +66,8 @@ def _get_pending_findings(project_root: str | None) -> list[dict]:
     if not DB_PATH.exists():
         return []
 
-    cutoff = (datetime.now() - timedelta(days=STALE_DAYS)).isoformat()
+    # pre-tool-inject-findings.py と統一: DB の created_at (秒精度) との文字列比較で誤差を防ぐ
+    cutoff = (datetime.now() - timedelta(days=STALE_DAYS)).strftime('%Y-%m-%dT%H:%M:%S')
 
     conn = None  # sqlite3.connect() 失敗時の finally NameError を防ぐ
     try:
@@ -84,7 +86,7 @@ def _get_pending_findings(project_root: str | None) -> list[dict]:
                       AND resolution = 'pending'
                       AND severity IN ('critical', 'high', 'warning')
                       AND created_at >= ?
-                      AND replace(file_path, '\\', '/') LIKE ?
+                      AND LOWER(replace(file_path, '\\', '/')) LIKE LOWER(?)
                     ORDER BY
                       CASE severity
                         WHEN 'critical' THEN 0

@@ -41,24 +41,25 @@ def main():
 
     # append-only: 1行=1イベント（read-modify-write 競合なし・JSON 破損リスクなし）
     # 並列 Edit が同時に append してもファイル破損は発生しない
+    # "e\n" を使う理由: "\n" だと splitlines() が空文字列を返すため、ローテーション後に
+    # "\n" * N を書いても count=N になり偽通知が発火する既知バグを回避するため
     with open(counter_file, "a", encoding="utf-8") as f:
-        f.write("\n")
+        f.write("e\n")
 
-    # セッション内の累計カウントを行数で算出（空行は除外してカウントの意図を明確にする）
+    # 非空行のみをイベントとしてカウント（"e" 行 = 1 イベント）
     try:
         lines = counter_file.read_text(encoding="utf-8").splitlines()
-        count = sum(1 for line in lines if line == "")  # splitlines() 後の空文字列 = イベント行
+        count = sum(1 for line in lines if line)
     except OSError:
         count = 1
 
     # ローテーション: セッション内でも長期実行時に肥大化しないようにする
     # session-end の cleanup だけに頼るとクラッシュ時にファイルが残存するため二重対策
-    # ローテーション後は sys.exit(0) で即終了する（trimmed行数が BATCH_THRESHOLD の倍数になると
-    # 偽通知が発火するため、ローテーション後は通知判定をスキップするのが安全）
+    # ゼロバイトリセット: ローテーション後の count=0 保証（"\n" * N は splitlines で count=N になるバグを回避）
+    # ローテーション後は sys.exit(0) で即終了する（偽通知防止）
     if count > ROTATION_LIMIT:
         try:
-            # "\n" を ROTATION_LIMIT//2 個書き込む（splitlines 依存を排除して行数を明示的に保証）
-            counter_file.write_text("\n" * (ROTATION_LIMIT // 2), encoding="utf-8")
+            counter_file.write_text("", encoding="utf-8")
         except OSError:
             pass
         sys.exit(0)
