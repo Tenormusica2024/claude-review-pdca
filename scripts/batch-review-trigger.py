@@ -50,11 +50,34 @@ def _get_edit_count(session_id: str) -> int:
         return 0
     try:
         lines = counter_file.read_text(encoding="utf-8").splitlines()
-        # append-only 形式: 1 append = 1行（'e' 固定文字列）
-        # post-tool-edit-counter.py が "e\n" を append するため、非空行をカウントする
         return sum(1 for line in lines if line)
     except OSError:
         return 0
+
+
+def _get_edited_files(session_id: str) -> list[str]:
+    """セッション内で編集されたファイルリストを取得する。"""
+    files_file = COUNTER_DIR / f"{session_id}_files.txt"
+    if not files_file.exists():
+        return []
+    try:
+        return [line.strip() for line in files_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+    except OSError:
+        return []
+
+
+def _reset_counter(session_id: str) -> None:
+    """レビュー後にカウンタとファイルリストをリセットする。"""
+    counter_file = COUNTER_DIR / f"{session_id}.txt"
+    files_file = COUNTER_DIR / f"{session_id}_files.txt"
+    try:
+        counter_file.write_text("", encoding="utf-8")
+    except OSError:
+        pass
+    try:
+        files_file.write_text("", encoding="utf-8")
+    except OSError:
+        pass
 
 
 def _get_pending_findings(project_root: str | None) -> list[dict]:
@@ -132,13 +155,19 @@ def _get_pending_findings(project_root: str | None) -> list[dict]:
             conn.close()
 
 
-def _format_batch_report(findings: list[dict], edit_count: int, threshold: int) -> str:
+def _format_batch_report(findings: list[dict], edit_count: int, threshold: int, edited_files: list[str] | None = None) -> str:
     """batch review 用の構造化レポートを生成する。"""
     lines = [
         f"=== BATCH REVIEW TRIGGER: {edit_count} 件の編集が完了 ===",
         f"（閾値 {threshold} 件に達しました。以下の pending findings を参考にレビューしてください）",
         "",
     ]
+
+    if edited_files:
+        lines.append(f"レビュー対象ファイル（セッション内全編集 {len(edited_files)} 件）:")
+        for fp in edited_files:
+            lines.append(f"  - {fp}")
+        lines.append("")
 
     if not findings:
         lines.append("pending findings: なし（DB にマッチする findings が存在しない）")
@@ -247,11 +276,19 @@ def main() -> int:
         print(f"[batch-review-trigger] DB が見つかりません: {DB_PATH}", file=sys.stderr)
         return 1
 
+    # セッション内で編集されたファイルリストを取得
+    edited_files = _get_edited_files(session_id) if session_id else []
+
     # findings を取得して出力
     project_root = args.project_root
     findings = _get_pending_findings(project_root)
-    report = _format_batch_report(findings, edit_count, threshold)
+    report = _format_batch_report(findings, edit_count, threshold, edited_files)
     print(report)
+
+    # レビュー後にカウンタとファイルリストをリセット（次の5編集サイクルへ）
+    if session_id:
+        _reset_counter(session_id)
+
     return 0
 
 

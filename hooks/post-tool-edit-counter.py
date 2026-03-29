@@ -29,22 +29,50 @@ def main():
     except Exception:
         sys.exit(0)
 
-    if payload.get("tool_name") not in ("Edit", "Write", "MultiEdit"):
+    tool_name = payload.get("tool_name")
+    if tool_name not in ("Edit", "Write", "MultiEdit"):
         sys.exit(0)
 
     session_id = payload.get("session_id", "")
     if not session_id:
         sys.exit(0)  # session_id 不明時はスキップ
 
+    # 編集対象ファイルパスを収集（バッチレビューのスコープ決定用）
+    tool_input = payload.get("tool_input", {})
+    file_paths: list[str] = []
+    if tool_name == "MultiEdit":
+        seen: set[str] = set()
+        for edit in tool_input.get("edits", []):
+            fp = edit.get("file_path")
+            if fp and fp not in seen:
+                file_paths.append(fp.replace("\\", "/"))
+                seen.add(fp)
+    else:
+        fp = tool_input.get("file_path") or tool_input.get("path")
+        if fp:
+            file_paths = [fp.replace("\\", "/")]
+
     COUNTER_DIR.mkdir(parents=True, exist_ok=True)
     counter_file = COUNTER_DIR / f"{session_id}.txt"
+    # ファイルリスト管理用（重複なし）
+    files_file = COUNTER_DIR / f"{session_id}_files.txt"
 
     # append-only: 1行=1イベント（read-modify-write 競合なし・JSON 破損リスクなし）
-    # 並列 Edit が同時に append してもファイル破損は発生しない
-    # "e\n" を使う理由: "\n" だと splitlines() が空文字列を返すため、ローテーション後に
-    # "\n" * N を書いても count=N になり偽通知が発火する既知バグを回避するため
     with open(counter_file, "a", encoding="utf-8") as f:
         f.write("e\n")
+
+    # ファイルパスを追記（重複チェック付き）
+    existing_files: set[str] = set()
+    if files_file.exists():
+        try:
+            existing_files = {line.strip() for line in files_file.read_text(encoding="utf-8").splitlines() if line.strip()}
+        except OSError:
+            pass
+    new_files = [fp for fp in file_paths if fp not in existing_files]
+    if new_files:
+        with open(files_file, "a", encoding="utf-8") as f:
+            for fp in new_files:
+                f.write(f"{fp}\n")
 
     # 非空行のみをイベントとしてカウント（"e" 行 = 1 イベント）
     try:

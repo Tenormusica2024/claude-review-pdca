@@ -121,6 +121,7 @@ def main():
     try:
         # Phase 1 ALTER TABLE 完了前は dismissed カラムが存在しないためスキップ
         try:
+            # severity ガード: critical の findings は auto-promotion 禁止（明示的 opt-in のみ）
             raw = conn.execute("""
                 SELECT category, fp_reason, COUNT(*) AS cnt
                 FROM findings
@@ -128,10 +129,11 @@ def main():
                   AND dismissed_by = 'user'
                   AND fp_reason IS NOT NULL
                   AND fp_reason != ''
+                  AND severity != 'critical'
                 GROUP BY category, fp_reason
                 HAVING cnt >= 2     -- 2回以上承認されたパターンのみ学習
                 ORDER BY cnt DESC
-                LIMIT 10
+                LIMIT 20
             """).fetchall()
             # sqlite3.Row は接続クローズ後の参照が不安定なため、
             # conn.close() を呼ぶ前に Python ネイティブの tuple に変換する

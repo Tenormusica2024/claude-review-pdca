@@ -119,37 +119,65 @@ def get_findings(file_path: str, session_id: str) -> tuple[list[dict], bool]:
     conn.row_factory = sqlite3.Row
     try:
         # --- Phase A: ファイル特化クエリ ---
-        # NOT EXISTS サブクエリ: 同一ファイル内で同一パターンが既に 'fixed' の場合に除外（再発ノイズ削減）
+        # repo_root でリポジトリスコープを分離（クロスコンタミネーション防止）
         # ⚠️ dismissed カラムは Phase 1 ALTER TABLE 完了後に有効（追加前は OperationalError をスキップして空を返す）
-        # Phase A: パス区切りを / に正規化して Windows バックスラッシュパスとの不一致を防ぐ
-        # DB 側も replace() で正規化し、両辺を揃えてから完全一致比較する
         normalized_path = file_path.replace("\\", "/")
+        repo_root = _get_project_root(file_path)
         try:
-            rows = conn.execute("""
-                SELECT id, severity, category, finding_summary
-                FROM findings
-                WHERE replace(file_path, '\\', '/') = ?
-                  AND dismissed = 0
-                  AND resolution = 'pending'
-                  AND severity IN ('critical', 'high', 'warning')
-                  AND created_at >= ?
-                  AND NOT EXISTS (
-                      SELECT 1 FROM findings f2
-                      WHERE replace(f2.file_path, '\\', '/') = replace(findings.file_path, '\\', '/')
-                        AND f2.category        = findings.category
-                        AND f2.finding_summary = findings.finding_summary
-                        AND f2.resolution      = 'accepted'
-                  )
-                ORDER BY
-                  CASE severity
-                    WHEN 'critical' THEN 0
-                    WHEN 'high'     THEN 1
-                    WHEN 'warning'  THEN 2
-                    ELSE 3
-                  END,
-                  id DESC
-                LIMIT ?
-            """, (normalized_path, cutoff, INJECT_LIMIT)).fetchall()
+            # repo_root が取得できた場合はスコープフィルタ追加、なければ従来通り
+            if repo_root:
+                rows = conn.execute("""
+                    SELECT id, severity, category, finding_summary
+                    FROM findings
+                    WHERE replace(file_path, '\\', '/') = ?
+                      AND replace(COALESCE(repo_root, ''), '\\', '/') = ?
+                      AND dismissed = 0
+                      AND resolution = 'pending'
+                      AND severity IN ('critical', 'high', 'warning')
+                      AND created_at >= ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM findings f2
+                          WHERE replace(f2.file_path, '\\', '/') = replace(findings.file_path, '\\', '/')
+                            AND f2.category        = findings.category
+                            AND f2.finding_summary = findings.finding_summary
+                            AND f2.resolution      IN ('accepted', 'fixed')
+                      )
+                    ORDER BY
+                      CASE severity
+                        WHEN 'critical' THEN 0
+                        WHEN 'high'     THEN 1
+                        WHEN 'warning'  THEN 2
+                        ELSE 3
+                      END,
+                      id DESC
+                    LIMIT ?
+                """, (normalized_path, repo_root, cutoff, INJECT_LIMIT)).fetchall()
+            else:
+                rows = conn.execute("""
+                    SELECT id, severity, category, finding_summary
+                    FROM findings
+                    WHERE replace(file_path, '\\', '/') = ?
+                      AND dismissed = 0
+                      AND resolution = 'pending'
+                      AND severity IN ('critical', 'high', 'warning')
+                      AND created_at >= ?
+                      AND NOT EXISTS (
+                          SELECT 1 FROM findings f2
+                          WHERE replace(f2.file_path, '\\', '/') = replace(findings.file_path, '\\', '/')
+                            AND f2.category        = findings.category
+                            AND f2.finding_summary = findings.finding_summary
+                            AND f2.resolution      IN ('accepted', 'fixed')
+                      )
+                    ORDER BY
+                      CASE severity
+                        WHEN 'critical' THEN 0
+                        WHEN 'high'     THEN 1
+                        WHEN 'warning'  THEN 2
+                        ELSE 3
+                      END,
+                      id DESC
+                    LIMIT ?
+                """, (normalized_path, cutoff, INJECT_LIMIT)).fetchall()
         except sqlite3.OperationalError:
             return [], False  # dismissed カラム未追加時はスキップ
 
