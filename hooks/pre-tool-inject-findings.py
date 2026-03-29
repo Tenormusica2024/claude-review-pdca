@@ -135,7 +135,7 @@ def get_findings(file_path: str, session_id: str) -> tuple[list[dict], bool]:
                       WHERE f2.file_path       = findings.file_path
                         AND f2.category        = findings.category
                         AND f2.finding_summary = findings.finding_summary
-                        AND f2.resolution      = 'fixed'
+                        AND f2.resolution      = 'accepted'
                   )
                 ORDER BY
                   CASE severity

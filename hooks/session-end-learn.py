@@ -201,7 +201,7 @@ def main():
 
     # アトミック書き込み: temp ファイルに書いてから os.replace でアトミックに置換する
     # CLAUDE.md の同時書き込みによる lost update を防ぐ（NTFS では MoveFileEx がアトミック）
-    # block は '\n\n## で始まるため content 末尾の \r\n 除去後に結合しても空行 2 行が挿入される
+    # block は '\n## で始まるため content 末尾の \n と合わせて \n\n（空行1行）が挿入される
     tmp_path = None  # except ブロックで未定義の場合の NameError を防ぐ
     try:
         with tempfile.NamedTemporaryFile(
