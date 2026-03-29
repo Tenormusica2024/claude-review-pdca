@@ -19,17 +19,19 @@ STATE_DIR = Path.home() / ".claude" / "inject-state"
 COUNTER_DIR = Path.home() / ".claude" / "edit-counter"
 
 
-def _find_claude_md(payload: dict) -> Path | None:
+def _find_claude_md(payload: dict) -> tuple[Path | None, str | None]:
     """
-    プロジェクト固有の CLAUDE.md を探す（3段フォールバック）。
+    プロジェクト固有の CLAUDE.md とリポジトリルートを探す（3段フォールバック）。
     SessionEnd の cwd はプロジェクトルートとは限らないため動的に解決する。
+
+    Returns:
+        (claude_md_path, repo_root): CLAUDE.md の Path と正規化済み repo_root。
+        repo_root は学習クエリのプロジェクトスコープフィルタに使用する。
     """
+    repo_root = None
+
     # 1. payload["cwd"] を優先（Claude Code が渡す作業ディレクトリ）
     cwd_str = payload.get("cwd")
-    if cwd_str:
-        candidate = Path(cwd_str) / "CLAUDE.md"
-        if candidate.exists():
-            return candidate
 
     # 2. git rev-parse --show-toplevel で git root を取得
     try:
@@ -39,11 +41,22 @@ def _find_claude_md(payload: dict) -> Path | None:
             capture_output=True, text=True, timeout=3
         )
         if result.returncode == 0:
-            candidate = Path(result.stdout.strip()) / "CLAUDE.md"
-            if candidate.exists():
-                return candidate
+            # バックスラッシュをスラッシュに統一（pre-tool-inject-findings.py と同じ正規化）
+            normalized = result.stdout.strip().replace("\\", "/")
+            repo_root = normalized.replace("//", "/") if normalized.startswith("//") else normalized
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
+
+    # CLAUDE.md 探索: cwd → git root → Path.cwd() の順にフォールバック
+    if cwd_str:
+        candidate = Path(cwd_str) / "CLAUDE.md"
+        if candidate.exists():
+            return candidate, repo_root
+
+    if repo_root:
+        candidate = Path(repo_root) / "CLAUDE.md"
+        if candidate.exists():
+            return candidate, repo_root
 
     # 3. Path.cwd() フォールバック
     candidate = Path.cwd() / "CLAUDE.md"
@@ -51,10 +64,10 @@ def _find_claude_md(payload: dict) -> Path | None:
         # グローバル CLAUDE.md（~/.CLAUDE.md 相当）への誤書き込みを防ぐ:
         # cwd がホームディレクトリの場合に C:\Users\<user>\CLAUDE.md を掴んでしまうケースを除外
         if candidate.resolve() == (Path.home() / "CLAUDE.md").resolve():
-            return None
-        return candidate
+            return None, repo_root
+        return candidate, repo_root
 
-    return None  # プロジェクト固有 CLAUDE.md が見つからない場合はスキップ
+    return None, repo_root  # プロジェクト固有 CLAUDE.md が見つからない場合はスキップ
 
 
 def _cleanup_inject_state() -> None:
@@ -108,7 +121,7 @@ def main():
         return
 
     # プロジェクト固有の CLAUDE.md を動的に探す（cwd 依存を排除）
-    claude_md_path = _find_claude_md(payload)
+    claude_md_path, repo_root = _find_claude_md(payload)
     if claude_md_path is None:
         return  # プロジェクト固有 CLAUDE.md が存在しない場合はスキップ（グローバルは書かない）
 
@@ -122,19 +135,37 @@ def main():
         # Phase 1 ALTER TABLE 完了前は dismissed カラムが存在しないためスキップ
         try:
             # severity ガード: critical の findings は auto-promotion 禁止（明示的 opt-in のみ）
-            raw = conn.execute("""
-                SELECT category, fp_reason, COUNT(*) AS cnt
-                FROM findings
-                WHERE dismissed = 1
-                  AND dismissed_by = 'user'
-                  AND fp_reason IS NOT NULL
-                  AND fp_reason != ''
-                  AND severity != 'critical'
-                GROUP BY category, fp_reason
-                HAVING cnt >= 2     -- 2回以上承認されたパターンのみ学習
-                ORDER BY cnt DESC
-                LIMIT 20
-            """).fetchall()
+            # repo_root フィルタ: 他プロジェクトの dismissed パターンを学習しない（クロスコンタミネーション防止）
+            if repo_root:
+                raw = conn.execute("""
+                    SELECT category, fp_reason, COUNT(*) AS cnt
+                    FROM findings
+                    WHERE dismissed = 1
+                      AND dismissed_by = 'user'
+                      AND fp_reason IS NOT NULL
+                      AND fp_reason != ''
+                      AND severity != 'critical'
+                      AND replace(COALESCE(repo_root, ''), '\\', '/') = ?
+                    GROUP BY category, fp_reason
+                    HAVING cnt >= 2     -- 2回以上承認されたパターンのみ学習
+                    ORDER BY cnt DESC
+                    LIMIT 20
+                """, (repo_root,)).fetchall()
+            else:
+                # repo_root 不明時はフィルタなし（git 管理外からの SessionEnd）
+                raw = conn.execute("""
+                    SELECT category, fp_reason, COUNT(*) AS cnt
+                    FROM findings
+                    WHERE dismissed = 1
+                      AND dismissed_by = 'user'
+                      AND fp_reason IS NOT NULL
+                      AND fp_reason != ''
+                      AND severity != 'critical'
+                    GROUP BY category, fp_reason
+                    HAVING cnt >= 2     -- 2回以上承認されたパターンのみ学習
+                    ORDER BY cnt DESC
+                    LIMIT 20
+                """).fetchall()
             # sqlite3.Row は接続クローズ後の参照が不安定なため、
             # conn.close() を呼ぶ前に Python ネイティブの tuple に変換する
             rows = [tuple(r) for r in raw]

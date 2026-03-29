@@ -130,7 +130,7 @@ def get_findings(file_path: str, session_id: str) -> tuple[list[dict], bool]:
                     SELECT id, severity, category, finding_summary
                     FROM findings
                     WHERE replace(file_path, '\\', '/') = ?
-                      AND replace(COALESCE(repo_root, ''), '\\', '/') = ?
+                      AND (replace(COALESCE(repo_root, ''), '\\', '/') = ? OR repo_root IS NULL)
                       AND dismissed = 0
                       AND resolution = 'pending'
                       AND severity IN ('critical', 'high', 'warning')
@@ -192,7 +192,8 @@ def get_findings(file_path: str, session_id: str) -> tuple[list[dict], bool]:
         # --- Phase B: プロジェクト横断 critical フォールバック（新規ファイル・findings なしファイル用）---
         # SNR 維持のため severity = 'critical' のみに絞り LIMIT も小さくする
         # project_root フィルタ: 他プロジェクトの critical を混入させない
-        project_root = _get_project_root(file_path)
+        # Phase A で取得済みの repo_root を再利用（_get_project_root の二重サブプロセス呼び出しを回避）
+        project_root = repo_root
         # rstrip('/') で末尾スラッシュを正規化してから '/%' を付与（境界不一致防止）
         # project_filter 自体は LOWER() 変換しない。クエリ側で両辺を LOWER() 適用するため
         project_filter = (project_root.rstrip("/") + "/%") if project_root else None
