@@ -24,9 +24,9 @@ CREATE TABLE findings (
 );
 ```
 
-## 追加カラム（ALTER TABLE で拡張）
+## 追加カラム（ALTER TABLE で拡張済み）
 
-これらのカラムは**まだ存在しない**。Phase 1 実装時に追加する。
+これらのカラムは Phase 1 の ALTER TABLE で追加済み。
 
 ```sql
 -- dismissed 管理（ユーザー承認専用）
@@ -67,31 +67,45 @@ CREATE TABLE findings (
 );
 ```
 
-## インデックス（注入クエリ高速化）
+## review_sessions テーブル
 
-> **注意**: `dismissed` カラムは Phase 1 の ALTER TABLE 完了後に追加される。それ以前は下記インデックスは作成しないこと。
+レビューセッション（inject → record/close のライフサイクル）を管理するテーブル。
 
 ```sql
--- PreToolUse hook の WHERE file_path = ? クエリを高速化
-CREATE INDEX IF NOT EXISTS idx_file_path
-    ON findings (file_path, dismissed, severity);
+CREATE TABLE IF NOT EXISTS review_sessions (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id    TEXT,
+    reviewer      TEXT NOT NULL,
+    status        TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed')),
+    started_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),
+    closed_at     TEXT,
+    findings_count INTEGER DEFAULT 0,
+    close_reason  TEXT
+);
+```
 
--- SessionStart の pending 件数カウント高速化
-CREATE INDEX IF NOT EXISTS idx_pending
-    ON findings (dismissed, resolution, severity);
+## インデックス
+
+```sql
+-- findings テーブル
+CREATE INDEX IF NOT EXISTS idx_findings_reviewer ON findings(reviewer);
+CREATE INDEX IF NOT EXISTS idx_findings_resolution ON findings(resolution);
+CREATE INDEX IF NOT EXISTS idx_findings_reviewer_resolution ON findings(reviewer, resolution);
+CREATE INDEX IF NOT EXISTS idx_findings_file_path ON findings(file_path);
+CREATE INDEX IF NOT EXISTS idx_findings_pending ON findings(resolution, severity, created_at);
+
+-- review_sessions テーブル
+CREATE INDEX IF NOT EXISTS idx_review_sessions_status ON review_sessions(status);
 ```
 
 ## 標準クエリ集
-
-> **注意**: 以下のクエリは Phase 1 の ALTER TABLE 完了後に有効になる。
-> `dismissed` / `injected_count` / `last_injected` カラム追加前は `AND dismissed = 0` を除いて実行すること。
 
 ### ファイル特化注入クエリ（PreToolUse hook 用）
 
 ```sql
 SELECT id, severity, category, finding_summary
 FROM findings
-WHERE file_path = :target_file
+WHERE replace(file_path, '\', '/') = replace(:target_file, '\', '/')
   AND dismissed = 0
   AND resolution = 'pending'
   AND severity IN ('critical', 'high', 'warning')

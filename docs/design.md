@@ -15,9 +15,10 @@
 claude-review-pdca/
 ├── hooks/
 │   ├── pre-tool-inject-findings.py   # PreToolUse: ファイル特化注入
+│   ├── post-tool-edit-counter.py     # PostToolUse: 編集カウント管理（バッチトリガー用）
 │   └── session-end-learn.py          # SessionEnd: dismissed → CLAUDE.md 反映
 ├── scripts/
-│   └── batch-review-trigger.py       # [Phase 2] 5編集ごとのバッチレビュー起動（未実装）
+│   └── batch-review-trigger.py       # 5編集ごとのバッチレビュー起動
 └── docs/
     ├── design.md        （本ファイル）
     ├── db-schema.md
@@ -34,10 +35,9 @@ claude-review-pdca/
 編集対象ファイルに紐づく findings のみ、LIMIT 8 件に絞って注入する。
 
 ```sql
--- ⚠️ dismissed カラムは Phase 1 ALTER TABLE 完了後に有効（追加前は AND dismissed = 0 を除くこと）
 SELECT id, severity, category, finding_summary
 FROM findings
-WHERE file_path = :target_file
+WHERE replace(file_path, '\', '/') = replace(:target_file, '\', '/')
   AND dismissed = 0
   AND resolution = 'pending'
 ORDER BY
@@ -89,7 +89,6 @@ Edit のたびに /ifr を自動起動すると：
 - 直近 30 日以上前の finding（陳腐化リスク）
 
 ```sql
--- ⚠️ dismissed カラムは Phase 1 ALTER TABLE 完了後に有効（追加前は AND dismissed = 0 を除くこと）
 AND dismissed = 0
 AND resolution = 'pending'
 AND severity IN ('critical', 'high', 'warning')
