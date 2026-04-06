@@ -20,7 +20,7 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-from config import DB_PATH, INJECT_STATE_DIR as STATE_DIR
+from config import DB_PATH, INJECT_STATE_DIR as STATE_DIR, normalize_git_root
 INJECT_LIMIT = 8
 FALLBACK_LIMIT = 5   # Phase B: プロジェクト横断 critical のみに絞るため小さめ
 STALE_DAYS = 30
@@ -113,17 +113,7 @@ def _get_project_root(file_path: str, cwd: str | None = None) -> str | None:
             capture_output=True, text=True, timeout=3
         )
         if result.returncode == 0:
-            # バックスラッシュをスラッシュに統一し、二重スラッシュを除去して
-            # LIKE パターンとの整合性を保つ（UNCパス・git出力ゆれの両方に対応）
-            normalized = result.stdout.strip().replace("\\", "/")
-            # UNCパス（//server/share）の先頭 // は保持し、内部の // のみ除去
-            unc_prefix = ""
-            if normalized.startswith("//"):
-                unc_prefix = "//"
-                normalized = normalized[2:]
-            while "//" in normalized:
-                normalized = normalized.replace("//", "/")
-            return unc_prefix + normalized
+            return normalize_git_root(result.stdout)
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
     # git 管理外ファイルはプロジェクト判定不能 → None を返して Phase B をスキップ

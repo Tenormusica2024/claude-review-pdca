@@ -12,3 +12,17 @@ INJECT_STATE_DIR = Path.home() / ".claude" / "inject-state"
 
 # PostToolUse hook: セッション別編集カウントディレクトリ
 EDIT_COUNTER_DIR = Path.home() / ".claude" / "edit-counter"
+
+
+def normalize_git_root(raw_output: str) -> str:
+    """git rev-parse --show-toplevel の出力を正規化する。
+    バックスラッシュ→スラッシュ統一、二重スラッシュ除去、UNCパス先頭 // 保持。"""
+    normalized = raw_output.strip().replace("\\", "/")
+    # UNCパス（//server/share）の先頭 // は保持し、内部の // のみ除去
+    unc_prefix = ""
+    if normalized.startswith("//"):
+        unc_prefix = "//"
+        normalized = normalized[2:]
+    while "//" in normalized:
+        normalized = normalized.replace("//", "/")
+    return unc_prefix + normalized

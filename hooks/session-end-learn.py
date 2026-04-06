@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # hook は任意の cwd から実行されるため、config.py がある hooks/ を sys.path に追加
@@ -21,7 +22,7 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-from config import DB_PATH, INJECT_STATE_DIR as STATE_DIR, EDIT_COUNTER_DIR as COUNTER_DIR
+from config import DB_PATH, INJECT_STATE_DIR as STATE_DIR, EDIT_COUNTER_DIR as COUNTER_DIR, normalize_git_root
 
 
 def _find_claude_md(payload: dict) -> tuple[Path | None, str | None]:
@@ -46,16 +47,7 @@ def _find_claude_md(payload: dict) -> tuple[Path | None, str | None]:
             capture_output=True, text=True, timeout=3
         )
         if result.returncode == 0:
-            # バックスラッシュをスラッシュに統一（pre-tool-inject-findings.py と同じ正規化）
-            normalized = result.stdout.strip().replace("\\", "/")
-            # UNCパス（//server/share）の先頭 // は保持し、内部の // のみ除去
-            unc_prefix = ""
-            if normalized.startswith("//"):
-                unc_prefix = "//"
-                normalized = normalized[2:]
-            while "//" in normalized:
-                normalized = normalized.replace("//", "/")
-            repo_root = unc_prefix + normalized
+            repo_root = normalize_git_root(result.stdout)
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
 
@@ -93,7 +85,9 @@ def _gc_stale_findings() -> int:
         return 0
     try:
         conn = sqlite3.connect(str(DB_PATH), timeout=5)
-        from datetime import datetime, timedelta
+    except (sqlite3.Error, OSError):
+        return 0
+    try:
         cutoff = (datetime.now() - timedelta(days=STALE_DAYS)).strftime('%Y-%m-%dT%H:%M:%S')
         now = datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
         cursor = conn.execute("""
@@ -105,10 +99,11 @@ def _gc_stale_findings() -> int:
         """, (now, cutoff))
         count = cursor.rowcount
         conn.commit()
-        conn.close()
         return count
     except (sqlite3.Error, OSError):
         return 0
+    finally:
+        conn.close()
 
 
 def _cleanup_inject_state() -> None:
