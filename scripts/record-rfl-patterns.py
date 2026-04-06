@@ -77,7 +77,8 @@ def main():
     repo_root = args.repo_root or _detect_repo_root()
 
     # severity フィルタ: warning 以上のみ記録（info/nitpick は学習対象外）
-    valid_severities = {"critical", "warning"}
+    # review-feedback.db の severity IN ('critical', 'high', 'warning') と一致させる
+    valid_severities = {"critical", "high", "warning"}
     recorded = 0
     skipped = 0
 
@@ -98,6 +99,7 @@ def main():
         if file_path:
             file_path = file_path.replace("\\", "/")
 
+        # pattern_db は severity を critical/warning のみ受け付ける（high → warning にマッピング）
         pattern_id = record_pattern(
             category=category,
             pattern_text=summary,

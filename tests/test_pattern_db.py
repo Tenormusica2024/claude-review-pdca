@@ -107,13 +107,13 @@ class TestRecordPattern:
             conn.close()
 
     def test_pattern_text_truncation(self):
-        """50文字を超えるパターンテキストが切り詰められる。"""
+        """80文字を超えるパターンテキストが切り詰められる。"""
         long_text = "a" * 100
         pid = record_pattern(category="logic", pattern_text=long_text)
         conn = get_connection()
         try:
             row = conn.execute("SELECT pattern_text FROM patterns WHERE id = ?", (pid,)).fetchone()
-            assert len(row["pattern_text"]) == 50
+            assert len(row["pattern_text"]) == 80
         finally:
             conn.close()
 

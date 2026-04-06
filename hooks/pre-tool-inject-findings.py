@@ -20,7 +20,7 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-from config import DB_PATH, INJECT_STATE_DIR as STATE_DIR, normalize_git_root
+from config import DB_PATH, INJECT_STATE_DIR as STATE_DIR, normalize_git_root, REVIEW_FEEDBACK_SCRIPT
 from pattern_db import get_patterns_for_file, format_injection_text as format_learned_patterns
 INJECT_LIMIT = 8
 FALLBACK_LIMIT = 5   # Phase B: プロジェクト横断 critical のみに絞るため小さめ
@@ -41,6 +41,7 @@ def _load_injected_ids(session_id: str) -> set[int]:
         if len(lines) > DEDUP_ROTATION_LIMIT:
             # 新しい半分を残す（古い finding は再注入されても SNR 影響は軽微）
             sliced = lines[len(lines) // 2:]
+            print(f"[inject-findings] dedup rotation: {len(lines)} → {len(sliced)} IDs", file=sys.stderr)
             tmp_path = None
             try:
                 # アトミック書き込み: 並列プロセスの append と競合した場合の
@@ -129,6 +130,8 @@ def get_fp_patterns(conn: sqlite3.Connection, repo_root: str | None) -> list[dic
     （AND dismissed = 0 条件あり）のため、resolution='pending' で安全にフィルタできる。"""
     try:
         if repo_root:
+            # dismissed=1 + resolution='pending' = ユーザーがFP認定したが修正は不要と判断した状態
+            # fixedに遷移したFPは除外（修正された=本物の問題だった可能性）
             rows = conn.execute("""
                 SELECT category, fp_reason, COUNT(*) AS cnt
                 FROM findings
@@ -199,6 +202,7 @@ def get_findings(
         # 鮮度条件: created_at >= 30日以内 OR last_relevant_edit >= 14日以内
         # last_relevant_edit カラムが未追加の場合は COALESCE で created_at 以前の値にフォールバック
         # 名前付きパラメータで順序依存を排除（保守性向上: 条件追加時のバインド変数ずれを防止）
+        # Phase A/B 共通の鮮度条件（Phase B の fallback_params にも :cutoff, :relevance_cutoff を含める前提）
         freshness_clause = "(created_at >= :cutoff OR COALESCE(last_relevant_edit, '2000-01-01') >= :relevance_cutoff)"
         base_params = {
             "file_path": normalized_path,
@@ -352,7 +356,7 @@ def format_injection(
 
     # dismiss コマンドのワンライナー提示（フリクション最小化: コピペ即実行可能）
     ids_csv = ",".join(str(f["id"]) for f in findings)
-    lines.append(f'誤検知なら一括dismiss: python "C:\\Users\\Tenormusica\\.claude\\scripts\\review-feedback.py" dismiss --ids {ids_csv} --no-interactive')
+    lines.append(f'誤検知なら一括dismiss: python "{REVIEW_FEEDBACK_SCRIPT}" dismiss --ids {ids_csv} --no-interactive')
 
     # #3: 学習済み FP パターンセクション（ユーザーが2回以上 dismiss 承認したパターン）
     if fp_patterns:

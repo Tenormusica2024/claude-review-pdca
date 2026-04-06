@@ -13,6 +13,9 @@ INJECT_STATE_DIR = Path.home() / ".claude" / "inject-state"
 # PostToolUse hook: セッション別編集カウントディレクトリ
 EDIT_COUNTER_DIR = Path.home() / ".claude" / "edit-counter"
 
+# review-feedback.py CLI スクリプトパス（dismiss コマンド等で参照）
+REVIEW_FEEDBACK_SCRIPT = str(Path.home() / ".claude" / "scripts" / "review-feedback.py")
+
 
 def normalize_git_root(raw_output: str) -> str:
     """git rev-parse --show-toplevel の出力を正規化する。
