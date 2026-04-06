@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timedelta
 from pathlib import Path
 
 # hook は任意の cwd から実行されるため、config.py がある hooks/ を sys.path に追加
@@ -21,7 +22,7 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-from config import DB_PATH, INJECT_STATE_DIR as STATE_DIR, EDIT_COUNTER_DIR as COUNTER_DIR
+from config import DB_PATH, INJECT_STATE_DIR as STATE_DIR, EDIT_COUNTER_DIR as COUNTER_DIR, normalize_git_root
 
 
 def _find_claude_md(payload: dict) -> tuple[Path | None, str | None]:
@@ -46,16 +47,7 @@ def _find_claude_md(payload: dict) -> tuple[Path | None, str | None]:
             capture_output=True, text=True, timeout=3
         )
         if result.returncode == 0:
-            # バックスラッシュをスラッシュに統一（pre-tool-inject-findings.py と同じ正規化）
-            normalized = result.stdout.strip().replace("\\", "/")
-            # UNCパス（//server/share）の先頭 // は保持し、内部の // のみ除去
-            unc_prefix = ""
-            if normalized.startswith("//"):
-                unc_prefix = "//"
-                normalized = normalized[2:]
-            while "//" in normalized:
-                normalized = normalized.replace("//", "/")
-            repo_root = unc_prefix + normalized
+            repo_root = normalize_git_root(result.stdout)
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
 
@@ -79,7 +71,22 @@ def _find_claude_md(payload: dict) -> tuple[Path | None, str | None]:
     if candidate.exists() and candidate.resolve() != home_claude_md:
         return candidate, repo_root
 
-    return None, repo_root  # プロジェクト固有 CLAUDE.md が見つからない場合はスキップ
+    # git リポジトリルートが判明しているのに CLAUDE.md がない場合は新規作成
+    # （リポジトリ作成時の漏れとみなす。ホームディレクトリ直下への作成は防止）
+    if repo_root:
+        candidate = Path(repo_root) / "CLAUDE.md"
+        if candidate.resolve() != home_claude_md:
+            try:
+                candidate.write_text(
+                    f"# Claude Code Instructions - {Path(repo_root).name}\n",
+                    encoding="utf-8"
+                )
+                print(f"[session-end-learn] CLAUDE.md を新規作成: {candidate}", file=sys.stderr)
+                return candidate, repo_root
+            except OSError:
+                pass  # 書き込み権限がない場合はスキップ
+
+    return None, repo_root  # CLAUDE.md が作成できなかった場合はスキップ
 
 
 STALE_DAYS = 90  # pending → stale 自動遷移の閾値（gc-stale CLI と同一値）
@@ -93,7 +100,9 @@ def _gc_stale_findings() -> int:
         return 0
     try:
         conn = sqlite3.connect(str(DB_PATH), timeout=5)
-        from datetime import datetime, timedelta
+    except (sqlite3.Error, OSError):
+        return 0
+    try:
         cutoff = (datetime.now() - timedelta(days=STALE_DAYS)).strftime('%Y-%m-%dT%H:%M:%S')
         now = datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
         cursor = conn.execute("""
@@ -105,10 +114,11 @@ def _gc_stale_findings() -> int:
         """, (now, cutoff))
         count = cursor.rowcount
         conn.commit()
-        conn.close()
         return count
     except (sqlite3.Error, OSError):
         return 0
+    finally:
+        conn.close()
 
 
 def _cleanup_inject_state() -> None:

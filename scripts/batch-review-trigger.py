@@ -110,7 +110,7 @@ def _get_pending_findings(project_root: str | None) -> list[dict]:
                     WHERE dismissed = 0
                       AND resolution = 'pending'
                       AND severity IN ('critical', 'high', 'warning')
-                      AND created_at >= ?
+                      AND (created_at >= ? OR COALESCE(last_relevant_edit, '2000-01-01') >= ?)
                       AND LOWER(replace(file_path, '\\', '/')) LIKE LOWER(?)
                     ORDER BY
                       CASE severity
@@ -121,7 +121,7 @@ def _get_pending_findings(project_root: str | None) -> list[dict]:
                       END,
                       id DESC
                     LIMIT ?
-                """, (cutoff, project_filter, BATCH_FINDINGS_LIMIT)).fetchall()
+                """, (cutoff, cutoff, project_filter, BATCH_FINDINGS_LIMIT)).fetchall()
             except sqlite3.OperationalError as e:
                 print(f"[batch-review-trigger] DB クエリエラー: {e}", file=sys.stderr)
                 return []
@@ -133,7 +133,7 @@ def _get_pending_findings(project_root: str | None) -> list[dict]:
                     WHERE dismissed = 0
                       AND resolution = 'pending'
                       AND severity IN ('critical', 'high', 'warning')
-                      AND created_at >= ?
+                      AND (created_at >= ? OR COALESCE(last_relevant_edit, '2000-01-01') >= ?)
                     ORDER BY
                       CASE severity
                         WHEN 'critical' THEN 0
@@ -143,7 +143,7 @@ def _get_pending_findings(project_root: str | None) -> list[dict]:
                       END,
                       id DESC
                     LIMIT ?
-                """, (cutoff, BATCH_FINDINGS_LIMIT)).fetchall()
+                """, (cutoff, cutoff, BATCH_FINDINGS_LIMIT)).fetchall()
             except sqlite3.OperationalError as e:
                 print(f"[batch-review-trigger] DB クエリエラー: {e}", file=sys.stderr)
                 return []

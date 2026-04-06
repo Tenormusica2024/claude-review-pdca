@@ -17,19 +17,20 @@ from pathlib import Path
 from collections import defaultdict
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+# normalize_git_root は config.py から import（DRY: 3箇所の重複を排除）
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-from config import DB_PATH
+from config import DB_PATH, normalize_git_root
 
 
 def resolve_absolute_path(file_path: str) -> str | None:
     """相対パスを絶対パスに解決する。
     file_path が相対パスの場合、ホームディレクトリを基準に解決する。
     存在しないパスは None を返す。"""
-    p = Path(file_path.replace("/", "\\"))
+    p = Path(file_path)
     if not p.is_absolute():
         # 相対パスはホームディレクトリ基準で解決（Claude Code の cwd がホームのため）
         p = Path.home() / p
@@ -47,15 +48,7 @@ def get_git_root(file_path: str) -> str | None:
             capture_output=True, text=True, timeout=3
         )
         if result.returncode == 0:
-            normalized = result.stdout.strip().replace("\\", "/")
-            # UNC パス保持
-            unc_prefix = ""
-            if normalized.startswith("//"):
-                unc_prefix = "//"
-                normalized = normalized[2:]
-            while "//" in normalized:
-                normalized = normalized.replace("//", "/")
-            return unc_prefix + normalized
+            return normalize_git_root(result.stdout)
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
     return None
@@ -129,6 +122,7 @@ def main():
     # --- Phase 2: セッションベース推定 ---
     # 同一セッション内で repo_root が「1種類だけ」判明しているケースに限定して推定
     # 複数 repo_root があるセッションは安全のためスキップ
+    session_resolved = 0  # Phase 2 未実行時でもレポートで参照するため事前初期化
     remaining_ids = {row["id"] for row in rows} - {u[1] for u in updates}
     if remaining_ids:
         session_roots = conn.execute("""
@@ -144,7 +138,6 @@ def main():
         # セッション → 唯一の repo_root マッピング
         session_root_map = {r["session_id"]: r["roots"] for r in session_roots}
 
-        session_resolved = 0
         session_multi_root = 0
         # 残りの NULL レコードのセッションを確認
         remaining_rows = conn.execute("""
