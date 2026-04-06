@@ -25,6 +25,7 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from pattern_db import record_pattern, validate_category
+from glm_classifier import classify_finding
 from config import normalize_git_root
 
 
@@ -49,6 +50,8 @@ def main():
     group.add_argument("--findings-file", type=str, help="JSON ファイルパス")
     parser.add_argument("--repo-root", type=str, default=None, help="リポジトリルート（省略時は自動検出）")
     parser.add_argument("--reviewer", type=str, default="review-fix-loop", help="レビュアー名")
+    parser.add_argument("--classify", action="store_true",
+                        help="GLM-5.1 で category が未設定の findings を自動分類する")
     args = parser.parse_args()
 
     # findings 読み込み
@@ -93,8 +96,21 @@ def main():
             skipped += 1
             continue
 
-        category = f.get("category", "maintainability")
+        category = f.get("category", "")
         file_path = f.get("file_path")
+
+        # --classify 時: category が空 or maintainability（デフォルト値）なら GLM 分類を試行
+        if args.classify and (not category or category == "maintainability"):
+            classification = classify_finding(
+                summary=summary,
+                severity=severity,
+                file_path=file_path,
+            )
+            category = classification["category"]
+            source = classification.get("source", "unknown")
+            print(f"  GLM分類: {summary[:40]}... → {category} ({source})", file=sys.stderr)
+        elif not category:
+            category = "maintainability"
         # file_path の正規化（バックスラッシュ→スラッシュ）
         if file_path:
             file_path = file_path.replace("\\", "/")
