@@ -117,6 +117,7 @@ LIMIT 8;
 
 Phase A が 0 件の場合のフォールバック。`severity = 'critical'` のみ、LIMIT 5。
 `file_path LIKE :project_filter` でプロジェクトルート配下に限定（他プロジェクト混入防止）。
+Phase A と同様に `last_relevant_edit` 鮮度 OR 条件を適用。
 
 ```sql
 SELECT id, severity, category, finding_summary
@@ -124,7 +125,7 @@ FROM findings
 WHERE dismissed = 0
   AND resolution = 'pending'
   AND severity = 'critical'
-  AND created_at >= :cutoff
+  AND (created_at >= :cutoff OR COALESCE(last_relevant_edit, '2000-01-01') >= :relevance_cutoff)
   AND LOWER(replace(file_path, '\', '/')) LIKE LOWER(:project_filter)
 ORDER BY id DESC
 LIMIT 5;

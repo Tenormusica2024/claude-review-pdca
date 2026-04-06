@@ -54,6 +54,11 @@ stdin → JSON (tool_name, tool_input) 受信
 - **鮮度 OR 条件**: `(created_at >= cutoff OR COALESCE(last_relevant_edit, '2000-01-01') >= relevance_cutoff)` で、30日超でも 14日以内に関連ファイルが編集された finding を注入対象に復活
 - **dismiss ディスカバラビリティ**: finding ID をインライン表示（`【severity】#ID category: summary`）+ dismiss コマンドワンライナーを注入テキストに追加
 - **FP パターン注入**: `get_fp_patterns()` でユーザー 2 回以上 dismiss 承認パターンを取得し、注入ブロック末尾に `--- 学習済みパターン ---` セクションとして追加（最初のファイルのみ、重複防止）
+- **Phase B 鮮度 OR 条件**: Phase A と同様に `last_relevant_edit` 鮮度条件を Phase B にも適用（critical は見逃すと致命的なため）
+- **cwd フォールバック**: `_get_project_root(file_path, cwd)` で新規ファイル（親ディレクトリ未存在）時に payload の cwd へフォールバック
+- **UNC パス無条件クリーンアップ**: `_get_project_root()` で `//` → `/` を `startswith` 条件なしで常に適用（git 出力ゆれに対応）
+- **dedup ローテーション**: `_load_injected_ids()` で `DEDUP_ROTATION_LIMIT`（2000行）超過時に古い半分を削除
+- **DB 接続統合**: `main()` で 1 回だけ `sqlite3.connect()` し、`get_findings()` と `get_fp_patterns()` で共有（二重接続排除）
 
 ### settings.json 登録
 
