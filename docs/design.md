@@ -84,7 +84,7 @@ Edit のたびに /ifr を自動起動すると：
 - dismissed = 1（ユーザー承認済みの不要 finding）
 - resolution != 'pending'（解決済み・accepted・fixed・stale 等）
 - severity = 'info' / 'nitpick'（低優先度。critical/high/warning のみ注入）
-- 直近 30 日以上前の finding（陳腐化リスク）
+- 直近 30 日以上前 **かつ** 14 日以内の `last_relevant_edit` もない finding（鮮度 OR 条件）
 - NOT EXISTS で同一パターンが既に `accepted` / `fixed` の finding は再注入しない
 
 セッション内 dedup: `~/.claude/inject-state/{session_id}.txt` に注入済み ID を記録し、
@@ -119,13 +119,23 @@ PreToolUse hook が生成するコンテキスト注入文の形式:
 
 ```
 === PAST FINDINGS: {file_path} ===
-【critical】{category}: {finding_summary}
-【high】{category}: {finding_summary}
-【warning】{category}: {finding_summary}
+【critical】#42 {category}: {finding_summary}
+【high】#38 {category}: {finding_summary}
+【warning】#35 {category}: {finding_summary}
 （{len(findings)} 件を表示）
+💡 dismiss: python review-feedback.py dismiss <ID> "<理由>"
 これらを考慮して編集してください。同じアンチパターンの繰り返しは避けること。
+
+--- 学習済みパターン ---
+[{category}] {fp_reason} （{cnt}回承認）
 === END FINDINGS ===
 ```
+
+**dismiss ディスカバラビリティ**: finding ID をインラインで表示し、dismiss コマンドのワンライナーを添える。
+ユーザーが false positive を即座に dismiss できるようにする（Act フェーズの活性化）。
+
+**FP パターン注入**: ユーザーが 2 回以上 dismiss 承認したカテゴリ＋理由を注入ブロック末尾に表示。
+レビュー時に同パターンの再検出を抑制する（学習ループの可視化）。
 
 ## データフロー図
 
@@ -139,7 +149,8 @@ review-feedback.py record
 review-feedback.db (SQLite)
     │
     ├──▶ PreToolUse hook (pre-tool-inject-findings.py)
-    │        │ Phase A: file_path + repo_root フィルタ + SNR フィルタ
+    │        │ Phase A: file_path + repo_root フィルタ + SNR フィルタ + 鮮度 OR 条件
+    │        │ Phase A+: FP パターン注入 + dismiss ディスカバラビリティ
     │        │ Phase B: project-wide critical フォールバック
     │        ▼
     │    コンテキスト注入 → Claude 実装

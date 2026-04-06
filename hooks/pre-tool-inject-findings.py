@@ -20,6 +20,8 @@ STATE_DIR = Path.home() / ".claude" / "inject-state"  # セッション別注入
 INJECT_LIMIT = 8
 FALLBACK_LIMIT = 5   # Phase B: プロジェクト横断 critical のみに絞るため小さめ
 STALE_DAYS = 30
+RELEVANCE_DAYS = 14  # last_relevant_edit 用の短縮ウィンドウ（古い finding でも最近触られたファイルなら注入復活）
+FP_PATTERN_LIMIT = 5  # 学習済み FP パターン表示上限
 
 
 def _load_injected_ids(session_id: str) -> set[int]:
@@ -90,28 +92,65 @@ def _get_project_root(file_path: str) -> str | None:
     return None
 
 
-def get_findings(file_path: str, session_id: str) -> tuple[list[dict], bool]:
+def get_fp_patterns(conn: sqlite3.Connection, repo_root: str | None) -> list[dict]:
+    """学習済み FP パターン（ユーザーが2回以上 dismiss 承認したカテゴリ+理由）を取得する。
+    注入テキスト末尾に追加して、Claude が同パターンの新規指摘を慎重に判断できるようにする。"""
+    try:
+        if repo_root:
+            rows = conn.execute("""
+                SELECT category, fp_reason, COUNT(*) AS cnt
+                FROM findings
+                WHERE dismissed = 1 AND dismissed_by = 'user'
+                  AND fp_reason IS NOT NULL AND fp_reason != ''
+                  AND severity != 'critical'
+                  AND (replace(COALESCE(repo_root, ''), '\\', '/') = ? OR repo_root IS NULL)
+                GROUP BY category, fp_reason
+                HAVING cnt >= 2
+                ORDER BY cnt DESC
+                LIMIT ?
+            """, (repo_root, FP_PATTERN_LIMIT)).fetchall()
+        else:
+            rows = conn.execute("""
+                SELECT category, fp_reason, COUNT(*) AS cnt
+                FROM findings
+                WHERE dismissed = 1 AND dismissed_by = 'user'
+                  AND fp_reason IS NOT NULL AND fp_reason != ''
+                  AND severity != 'critical'
+                GROUP BY category, fp_reason
+                HAVING cnt >= 2
+                ORDER BY cnt DESC
+                LIMIT ?
+            """, (FP_PATTERN_LIMIT,)).fetchall()
+        return [dict(r) for r in rows]
+    except sqlite3.OperationalError:
+        return []
+
+
+def get_findings(file_path: str, session_id: str) -> tuple[list[dict], bool, str | None]:
     """
-    findings と is_fallback フラグを返す。
+    findings, is_fallback フラグ, repo_root を返す。
     is_fallback=False: Phase A（ファイル特化）
     is_fallback=True : Phase B（プロジェクト横断 critical のみ・新規ファイル用フォールバック）
+    repo_root: FP パターン取得用に呼び出し元へ返す
 
     セッション内 dedup: 同一セッションで既に注入した finding は再注入しない。
     各ツール呼び出しは独立プロセスなのでファイルベースで状態を管理する。
     """
     if not DB_PATH.exists():
-        return [], False
+        return [], False, None
 
     # DB の created_at は SCHEMA で strftime('%Y-%m-%dT%H:%M:%S','now','localtime') 形式
     # Python 側も T 区切りに統一することで文字列比較の正確性を保証する
     cutoff = (datetime.now() - timedelta(days=STALE_DAYS)).strftime('%Y-%m-%dT%H:%M:%S')
+    # last_relevant_edit 用の短縮カットオフ（古い finding でも最近触られたファイルなら注入復活）
+    relevance_cutoff = (datetime.now() - timedelta(days=RELEVANCE_DAYS)).strftime('%Y-%m-%dT%H:%M:%S')
     now = datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
 
     # session_id が空の場合は注入をスキップする。
     # dedup なしで毎回全件を注入すると SNR が破壊されるため、
     # session_id を取得できない環境では注入しない方が安全。
     if not session_id:
-        return [], False
+        return [], False, None
     already_injected = _load_injected_ids(session_id)
 
     # timeout=5: 並列プロセスによる SQLITE_BUSY を待機して解消する
@@ -125,8 +164,11 @@ def get_findings(file_path: str, session_id: str) -> tuple[list[dict], bool]:
         repo_root = _get_project_root(file_path)
         try:
             # repo_root が取得できた場合はスコープフィルタ追加、なければ従来通り
+            # 鮮度条件: created_at >= 30日以内 OR last_relevant_edit >= 14日以内
+            # last_relevant_edit カラムが未追加の場合は COALESCE で created_at 以前の値にフォールバック
+            freshness_clause = "(created_at >= ? OR COALESCE(last_relevant_edit, '2000-01-01') >= ?)"
             if repo_root:
-                rows = conn.execute("""
+                rows = conn.execute(f"""
                     SELECT id, severity, category, finding_summary
                     FROM findings
                     WHERE replace(file_path, '\\', '/') = ?
@@ -134,7 +176,7 @@ def get_findings(file_path: str, session_id: str) -> tuple[list[dict], bool]:
                       AND dismissed = 0
                       AND resolution = 'pending'
                       AND severity IN ('critical', 'high', 'warning')
-                      AND created_at >= ?
+                      AND {freshness_clause}
                       AND NOT EXISTS (
                           SELECT 1 FROM findings f2
                           WHERE replace(f2.file_path, '\\', '/') = replace(findings.file_path, '\\', '/')
@@ -151,16 +193,16 @@ def get_findings(file_path: str, session_id: str) -> tuple[list[dict], bool]:
                       END,
                       id DESC
                     LIMIT ?
-                """, (normalized_path, repo_root, cutoff, INJECT_LIMIT)).fetchall()
+                """, (normalized_path, repo_root, cutoff, relevance_cutoff, INJECT_LIMIT)).fetchall()
             else:
-                rows = conn.execute("""
+                rows = conn.execute(f"""
                     SELECT id, severity, category, finding_summary
                     FROM findings
                     WHERE replace(file_path, '\\', '/') = ?
                       AND dismissed = 0
                       AND resolution = 'pending'
                       AND severity IN ('critical', 'high', 'warning')
-                      AND created_at >= ?
+                      AND {freshness_clause}
                       AND NOT EXISTS (
                           SELECT 1 FROM findings f2
                           WHERE replace(f2.file_path, '\\', '/') = replace(findings.file_path, '\\', '/')
@@ -177,9 +219,9 @@ def get_findings(file_path: str, session_id: str) -> tuple[list[dict], bool]:
                       END,
                       id DESC
                     LIMIT ?
-                """, (normalized_path, cutoff, INJECT_LIMIT)).fetchall()
+                """, (normalized_path, cutoff, relevance_cutoff, INJECT_LIMIT)).fetchall()
         except sqlite3.OperationalError:
-            return [], False  # dismissed カラム未追加時はスキップ
+            return [], False, repo_root  # dismissed カラム未追加時はスキップ
 
         # セッション内 dedup: 既注入 ID を除外
         findings = [dict(r) for r in rows if dict(r)["id"] not in already_injected]
@@ -187,7 +229,7 @@ def get_findings(file_path: str, session_id: str) -> tuple[list[dict], bool]:
             # Phase 1 で ALTER TABLE が完了するまでカラムが存在しないため OperationalError をスキップ
             _update_injection_tracking(conn, findings, now)
             _save_injected_ids(session_id, {f["id"] for f in findings})
-            return findings, False
+            return findings, False, repo_root
 
         # --- Phase B: プロジェクト横断 critical フォールバック（新規ファイル・findings なしファイル用）---
         # SNR 維持のため severity = 'critical' のみに絞り LIMIT も小さくする
@@ -199,7 +241,7 @@ def get_findings(file_path: str, session_id: str) -> tuple[list[dict], bool]:
         project_filter = (project_root.rstrip("/") + "/%") if project_root else None
 
         if not project_filter:
-            return [], False  # プロジェクト判定不能時は他プロジェクト混入防止のため Phase B をスキップ
+            return [], False, repo_root  # プロジェクト判定不能時は他プロジェクト混入防止のため Phase B をスキップ
 
         # depth check: git root が浅すぎる（ドライブルートや home 直下等）場合は
         # 他プロジェクトの findings を大量に巻き込む恐れがあるためスキップ
@@ -207,7 +249,7 @@ def get_findings(file_path: str, session_id: str) -> tuple[list[dict], bool]:
         # Linux: "/home/user/project"    → parts = ('/', 'home', 'user', 'project')      → len=4
         # 最低 4 セグメント未満（例: C:\Users まで）はプロジェクトルートとして認めない
         if len(Path(project_root).parts) < 4:
-            return [], False
+            return [], False, repo_root
 
         try:
             fallback_rows = conn.execute("""
@@ -222,20 +264,25 @@ def get_findings(file_path: str, session_id: str) -> tuple[list[dict], bool]:
                 LIMIT ?
             """, (cutoff, project_filter, FALLBACK_LIMIT)).fetchall()
         except sqlite3.OperationalError:
-            return [], False
+            return [], False, repo_root
 
         # セッション内 dedup（Phase B も同様に適用）
         fallback = [dict(r) for r in fallback_rows if dict(r)["id"] not in already_injected]
         if fallback:
             _update_injection_tracking(conn, fallback, now)
             _save_injected_ids(session_id, {f["id"] for f in fallback})
-            return fallback, True
-        return [], False
+            return fallback, True, repo_root
+        return [], False, repo_root
     finally:
         conn.close()
 
 
-def format_injection(file_path: str, findings: list[dict], is_fallback: bool = False) -> str:
+def format_injection(
+    file_path: str,
+    findings: list[dict],
+    is_fallback: bool = False,
+    fp_patterns: list[dict] | None = None,
+) -> str:
     if is_fallback:
         # Phase B: 新規ファイル用（プロジェクト横断 critical のみ）
         header = f"=== PROJECT-WIDE CRITICAL PATTERNS (新規ファイル: {file_path}) ==="
@@ -244,9 +291,22 @@ def format_injection(file_path: str, findings: list[dict], is_fallback: bool = F
         header = f"=== PAST FINDINGS: {file_path} ==="
     lines = [header]
     for f in findings:
-        lines.append(f"【{f['severity']}】{f['category'] or '?'}: {f['finding_summary']}")
+        # #1: dismiss ディスカバラビリティ — 各 finding に ID を表示
+        lines.append(f"【{f['severity']}】#{f['id']} {f['category'] or '?'}: {f['finding_summary']}")
     lines.append(f"（{len(findings)} 件を表示）")
     lines.append("これらを考慮して編集してください。同じアンチパターンの繰り返しは避けること。")
+
+    # #1: dismiss コマンドのワンライナー提示（Act フェーズのディスカバラビリティ向上）
+    finding_ids = ", ".join(str(f["id"]) for f in findings[:3])
+    lines.append(f'誤検知なら: python review-feedback.py dismiss <ID> --reason "理由"  (例: ID={finding_ids})')
+
+    # #3: 学習済み FP パターンセクション（ユーザーが2回以上 dismiss 承認したパターン）
+    if fp_patterns:
+        lines.append("--- 学習済みパターン（過去にFPとして却下済み） ---")
+        for p in fp_patterns:
+            lines.append(f"  [{p['category']}] {p['fp_reason']} ({p['cnt']}回却下)")
+        lines.append("上記パターンに類似する新規指摘は慎重に判断すること。")
+
     lines.append("=== END FINDINGS ===")
     return "\n".join(lines)
 
@@ -286,16 +346,36 @@ def main():
 
     # 各ファイルの findings を収集し、出力があるものだけ注入する
     outputs = []
+    first_repo_root = None  # FP パターン取得用（最初のファイルの repo_root を使い回す）
     for fp in file_paths:
-        findings, is_fallback = get_findings(fp, session_id)
+        findings, is_fallback, repo_root = get_findings(fp, session_id)
+        if first_repo_root is None and repo_root:
+            first_repo_root = repo_root
         if findings:
-            outputs.append(format_injection(fp, findings, is_fallback))
+            outputs.append((fp, findings, is_fallback))
 
     if not outputs:
         sys.exit(0)
 
+    # FP パターンを1回だけ取得（全ファイル共通で表示）
+    fp_patterns: list[dict] = []
+    if DB_PATH.exists():
+        conn = sqlite3.connect(DB_PATH, timeout=5)
+        conn.row_factory = sqlite3.Row
+        try:
+            fp_patterns = get_fp_patterns(conn, first_repo_root)
+        finally:
+            conn.close()
+
+    # 注入テキスト生成
+    injection_texts = []
+    for fp, findings, is_fallback in outputs:
+        injection_texts.append(format_injection(fp, findings, is_fallback, fp_patterns))
+        # FP パターンは最初のファイルにのみ追加（重複表示防止）
+        fp_patterns = None
+
     # stdout に注入文を出力 → Claude Code がコンテキストに追加する
-    print("\n\n".join(outputs))
+    print("\n\n".join(injection_texts))
     sys.exit(0)
 
 

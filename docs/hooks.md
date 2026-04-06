@@ -51,6 +51,9 @@ stdin → JSON (tool_name, tool_input) 受信
 - **Phase B depth check**: git root が 4 セグメント未満（ドライブルート等）の場合はスキップ
 - **Phase B repo_root 再利用**: Phase A で取得した `repo_root` を Phase B でも使い回す（`_get_project_root` の二重サブプロセス呼び出しを回避）
 - **cutoff フォーマット**: `strftime('%Y-%m-%dT%H:%M:%S')` で DB の秒精度 created_at と統一
+- **鮮度 OR 条件**: `(created_at >= cutoff OR COALESCE(last_relevant_edit, '2000-01-01') >= relevance_cutoff)` で、30日超でも 14日以内に関連ファイルが編集された finding を注入対象に復活
+- **dismiss ディスカバラビリティ**: finding ID をインライン表示（`【severity】#ID category: summary`）+ dismiss コマンドワンライナーを注入テキストに追加
+- **FP パターン注入**: `get_fp_patterns()` でユーザー 2 回以上 dismiss 承認パターンを取得し、注入ブロック末尾に `--- 学習済みパターン ---` セクションとして追加（最初のファイルのみ、重複防止）
 
 ### settings.json 登録
 
@@ -165,6 +168,7 @@ if rows and (rows['total'] or 0) > 0:
 - **カウント方法**: `sum(1 for line in lines if line)`（非空行のみ）
 - **ローテーション**: `ROTATION_LIMIT = 5000` 行超で `write_text("")` ゼロバイトリセット（`"\n" * N` 書き込みは偽通知バグを起こすため禁止）
 - **通知条件**: `count > 0 and count % BATCH_THRESHOLD == 0`（`count=0` での偽通知を防止）
+- **last_relevant_edit 更新**: 編集ファイルに紐づく pending findings の `last_relevant_edit` を現在時刻に更新。PreToolUse の OR 鮮度条件と連動し、古い finding でも最近編集されたファイルなら注入復活する
 
 ---
 

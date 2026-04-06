@@ -30,7 +30,9 @@ CREATE TABLE findings (
     fp_reason           TEXT,           -- false positive の理由
     -- 注入トラッキング（SNR 改善用）
     injected_count      INTEGER NOT NULL DEFAULT 0,
-    last_injected       TEXT
+    last_injected       TEXT,
+    -- 鮮度トラッキング（PostToolUse で更新）
+    last_relevant_edit  TEXT           -- 関連ファイル編集時に更新。14日以内なら created_at が古くても注入対象
 );
 ```
 
@@ -91,7 +93,7 @@ WHERE replace(file_path, '\', '/') = :normalized_path
   AND dismissed = 0
   AND resolution = 'pending'
   AND severity IN ('critical', 'high', 'warning')
-  AND created_at >= :cutoff
+  AND (created_at >= :cutoff OR COALESCE(last_relevant_edit, '2000-01-01') >= :relevance_cutoff)
   AND NOT EXISTS (
       SELECT 1 FROM findings f2
       WHERE replace(f2.file_path, '\', '/') = replace(findings.file_path, '\', '/')
@@ -155,6 +157,33 @@ GROUP BY category, fp_reason
 HAVING cnt >= 2
 ORDER BY cnt DESC
 LIMIT 20;
+```
+
+### 学習済み FP パターン取得（PreToolUse 注入用）
+
+repo_root スコープ付き。ユーザーが 2 回以上 dismiss 承認したカテゴリ＋理由を集計。
+
+```sql
+SELECT category, fp_reason, COUNT(*) AS cnt
+FROM findings
+WHERE dismissed = 1
+  AND dismissed_by = 'user'
+  AND fp_reason IS NOT NULL AND fp_reason != ''
+  AND severity != 'critical'
+  AND (replace(COALESCE(repo_root, ''), '\', '/') = :repo_root OR repo_root IS NULL)
+GROUP BY category, fp_reason
+HAVING cnt >= 2
+ORDER BY cnt DESC
+LIMIT 5;
+```
+
+### last_relevant_edit 更新（PostToolUse hook）
+
+```sql
+UPDATE findings
+SET last_relevant_edit = :now
+WHERE replace(file_path, '\', '/') = :normalized_path
+  AND resolution = 'pending';
 ```
 
 ### dismiss 操作（ユーザー承認時のみ実行）
