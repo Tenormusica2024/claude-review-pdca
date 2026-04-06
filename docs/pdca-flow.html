@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: 'Segoe UI', 'Hiragino Sans', 'Meiryo', sans-serif;
+    background: #FFFFFF;
+    padding: 24px 32px;
+    width: 1200px;
+    color: #333;
+  }
+  h1 {
+    text-align: center;
+    font-size: 20px;
+    color: #2C3E50;
+    margin-bottom: 4px;
+    letter-spacing: 1px;
+  }
+  .subtitle {
+    text-align: center;
+    font-size: 11px;
+    color: #7F8C8D;
+    margin-bottom: 20px;
+  }
+  .main-grid {
+    display: grid;
+    grid-template-columns: 1fr 60px 1fr;
+    grid-template-rows: auto 48px auto;
+    gap: 0;
+    margin-bottom: 12px;
+  }
+  .section {
+    border: 2px solid;
+    border-radius: 4px;
+    background: #FFFFFF;
+    overflow: hidden;
+  }
+  .section-header {
+    color: #FFFFFF;
+    padding: 8px 14px;
+    font-size: 13px;
+    font-weight: 700;
+    letter-spacing: 0.5px;
+  }
+  .section-body {
+    padding: 12px 14px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .card {
+    border: 1px solid;
+    border-radius: 4px;
+    padding: 10px;
+    font-size: 11px;
+    line-height: 1.5;
+  }
+  .card-title {
+    font-weight: 700;
+    font-size: 12px;
+    margin-bottom: 3px;
+  }
+  .card-desc {
+    color: #555;
+    font-size: 10.5px;
+  }
+  .section.plan { border-color: #3B7DD8; }
+  .section.plan .section-header { background: #3B7DD8; }
+  .section.plan .card { background: #EFF5FC; border-color: #B8D4F0; }
+  .section.plan .card-title { color: #1E4D8C; }
+  .section.do { border-color: #2E8B57; }
+  .section.do .section-header { background: #2E8B57; }
+  .section.do .card { background: #EFF8F2; border-color: #A8D8B8; }
+  .section.do .card-title { color: #1A5C36; }
+  .section.check { border-color: #C49B1A; }
+  .section.check .section-header { background: #C49B1A; }
+  .section.check .card { background: #FFFBEF; border-color: #E8D88C; }
+  .section.check .card-title { color: #7A6210; }
+  .section.act { border-color: #C0392B; }
+  .section.act .section-header { background: #C0392B; }
+  .section.act .card { background: #FDF2F1; border-color: #E8B0AA; }
+  .section.act .card-title { color: #8B1A1A; }
+  .section.act .card.db { background: #F3EDF8; border-color: #C5B3D6; }
+  .section.act .card.db .card-title { color: #5B3A7A; }
+  .section.act .card.claudemd { background: #FDF8E8; border-color: #E0D098; }
+  .section.act .card.claudemd .card-title { color: #7A6B2A; }
+  .flow-h {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .flow-v {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .flow-label {
+    font-size: 9.5px;
+    color: #666;
+    white-space: nowrap;
+    background: #fff;
+    padding: 0 4px;
+    line-height: 1.3;
+    text-align: center;
+  }
+  .flow-corner {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .cycle-return {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 10px 0 4px;
+    font-size: 10.5px;
+    color: #666;
+  }
+  .cycle-return .line {
+    height: 2px;
+    flex: 1;
+    max-width: 340px;
+    background: linear-gradient(to left, #C0392B, #3B7DD8);
+    border-radius: 1px;
+  }
+  .cycle-label {
+    font-weight: 600;
+    color: #444;
+  }
+</style>
+</head>
+<body>
+
+<h1>PDCA Review Cycle - Findings Management System</h1>
+<div class="subtitle">Claude Code review findings PDCA cycle | review-feedback.db + CLAUDE.md integration</div>
+
+<div class="main-grid">
+
+  <div class="section plan" style="grid-row:1; grid-column:1;">
+    <div class="section-header">1. Plan - Findings&#x6CE8;&#x5165; (PreToolUse)</div>
+    <div class="section-body">
+      <div class="card">
+        <div class="card-title">PreToolUse Hook</div>
+        <div class="card-desc">Edit/Write&#x30C4;&#x30FC;&#x30EB;&#x304C;&#x30C8;&#x30EA;&#x30AC;&#x30FC;<br>findings&#x3092;context&#x306B;&#x6CE8;&#x5165;</div>
+      </div>
+      <div class="card">
+        <div class="card-title">SQLite&#x30AF;&#x30A8;&#x30EA;</div>
+        <div class="card-desc">file_path&#x30D5;&#x30A3;&#x30EB;&#x30BF; + LIMIT 8<br>review-feedback.db&#x304B;&#x3089;&#x53D6;&#x5F97;</div>
+      </div>
+      <div class="card">
+        <div class="card-title">SNR&#x30D5;&#x30A3;&#x30EB;&#x30BF;</div>
+        <div class="card-desc">severity >= warning<br>dismissed=0 / 30&#x65E5;&#x4EE5;&#x5185;&#x306E;&#x307F;</div>
+      </div>
+      <div class="card">
+        <div class="card-title">&#x30B3;&#x30F3;&#x30C6;&#x30AD;&#x30B9;&#x30C8;&#x6CE8;&#x5165;</div>
+        <div class="card-desc">"=== PAST FINDINGS ==="&#x30D6;&#x30ED;&#x30C3;&#x30AF;&#x3092;<br>&#x5BFE;&#x8C61;&#x30D5;&#x30A1;&#x30A4;&#x30EB;&#x306B;&#x6CE8;&#x5165;</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="flow-h" style="grid-row:1; grid-column:2;">
+    <svg width="40" height="20"><path d="M4 10h30l-7-5M34 10l-7 5" stroke="#2E8B57" fill="none" stroke-width="2"/></svg>
+    <span class="flow-label">context&#x3092;<br>&#x6E21;&#x3059;</span>
+  </div>
+
+  <div class="section do" style="grid-row:1; grid-column:3;">
+    <div class="section-header">2. Do - &#x5B9F;&#x88C5; (Claude Code)</div>
+    <div class="section-body">
+      <div class="card">
+        <div class="card-title">Claude Code</div>
+        <div class="card-desc">&#x904E;&#x53BB;&#x306E;&#x5931;&#x6557;context&#x4ED8;&#x304D;&#x3067;<br>&#x30B3;&#x30FC;&#x30C9;&#x3092;&#x5B9F;&#x88C5;</div>
+      </div>
+      <div class="card">
+        <div class="card-title">&#x5931;&#x6557;&#x8A8D;&#x8B58;</div>
+        <div class="card-desc">&#x904E;&#x53BB;&#x306E;findings&#x304C;&#x8868;&#x793A;&#x3055;&#x308C;<br>anti-pattern&#x3092;&#x56DE;&#x907F;</div>
+      </div>
+      <div class="card">
+        <div class="card-title">&#x7DE8;&#x96C6;&#x30AB;&#x30A6;&#x30F3;&#x30BF;</div>
+        <div class="card-desc">post-tool-edit-counter.py&#x3067;<br>session&#x5185;&#x306E;&#x7DE8;&#x96C6;&#x56DE;&#x6570;&#x3092;&#x8A08;&#x6E2C;</div>
+      </div>
+      <div class="card">
+        <div class="card-title">PostToolUse Hook</div>
+        <div class="card-desc">counter&#x3092;increment&#x3057;<br>&#x95BE;&#x5024;&#x3067;batch review&#x3092;&#x8D77;&#x52D5;</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="flow-v" style="grid-row:2; grid-column:1;">
+    <span class="flow-label">review<br>&#x30C8;&#x30EA;&#x30AC;&#x30FC;</span>
+    <svg width="20" height="24"><path d="M10 2v18l-5-6M10 20l5-6" stroke="#C49B1A" fill="none" stroke-width="2"/></svg>
+  </div>
+
+  <div class="flow-corner" style="grid-row:2; grid-column:2;"></div>
+
+  <div class="flow-v" style="grid-row:2; grid-column:3;">
+    <span class="flow-label">5&#x7DE8;&#x96C6;<br>&#x3054;&#x3068;</span>
+    <svg width="20" height="24"><path d="M10 2v18l-5-6M10 20l5-6" stroke="#C0392B" fill="none" stroke-width="2"/></svg>
+  </div>
+
+  <div class="section check" style="grid-row:3; grid-column:1;">
+    <div class="section-header">3. Check - &#x30D0;&#x30C3;&#x30C1;&#x30EC;&#x30D3;&#x30E5;&#x30FC; (&#x7DE8;&#x96C6;5&#x56DE;&#x3054;&#x3068;)</div>
+    <div class="section-body">
+      <div class="card">
+        <div class="card-title">&#x30C8;&#x30EA;&#x30AC;&#x30FC;&#x6761;&#x4EF6;</div>
+        <div class="card-desc">5&#x7DE8;&#x96C6;&#x7D2F;&#x7A4D; / session&#x7D42;&#x4E86; /<br>&#x30E6;&#x30FC;&#x30B6;&#x30FC;&#x304C;/ifr&#x3092;&#x5B9F;&#x884C;</div>
+      </div>
+      <div class="card">
+        <div class="card-title">&#x30D0;&#x30C3;&#x30C1;&#x30EC;&#x30D3;&#x30E5;&#x30FC;&#x30B9;&#x30AF;&#x30EA;&#x30D7;&#x30C8;</div>
+        <div class="card-desc">batch-review-trigger.py&#x304C;<br>/ifr review&#x3092;&#x8D77;&#x52D5;</div>
+      </div>
+      <div class="card">
+        <div class="card-title">&#x65B0;&#x898F;findings</div>
+        <div class="card-desc">severity / category /<br>file_path / summary&#x3092;&#x751F;&#x6210;</div>
+      </div>
+      <div class="card">
+        <div class="card-title">DB&#x8A18;&#x9332;</div>
+        <div class="card-desc">review-feedback.py record&#x3067;<br>INSERT INTO findings</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="flow-h" style="grid-row:3; grid-column:2;">
+    <svg width="40" height="20"><path d="M4 10h30l-7-5M34 10l-7 5" stroke="#C0392B" fill="none" stroke-width="2"/></svg>
+    <span class="flow-label">findings&#x3092;<br>&#x4FDD;&#x5B58;</span>
+  </div>
+
+  <div class="section act" style="grid-row:3; grid-column:3;">
+    <div class="section-header">4. Act - &#x5B66;&#x7FD2;&#x3068;&#x6C38;&#x7D9A;&#x5316;</div>
+    <div class="section-body">
+      <div class="card db">
+        <div class="card-title">review-feedback.db</div>
+        <div class="card-desc">SQLite&#x4FDD;&#x5B58;: findings /<br>dismiss&#x5C65;&#x6B74; / injection&#x56DE;&#x6570;</div>
+      </div>
+      <div class="card">
+        <div class="card-title">&#x30E6;&#x30FC;&#x30B6;&#x30FC;Dismiss</div>
+        <div class="card-desc">&#x30E6;&#x30FC;&#x30B6;&#x30FC;&#x306E;&#x307F;&#x304C;&#x627F;&#x8A8D;&#x53EF;&#x80FD;<br>Claude&#x81EA;&#x5DF1;dismiss&#x306F;&#x7981;&#x6B62;</div>
+      </div>
+      <div class="card">
+        <div class="card-title">&#x30BB;&#x30C3;&#x30B7;&#x30E7;&#x30F3;&#x5B66;&#x7FD2;</div>
+        <div class="card-desc">session-end-learn.py&#x3067;<br>dismissed&#x30D1;&#x30BF;&#x30FC;&#x30F3;&#x3092;&#x62BD;&#x51FA;</div>
+      </div>
+      <div class="card claudemd">
+        <div class="card-title">CLAUDE.md&#x8FFD;&#x8A18;</div>
+        <div class="card-desc">false positive&#x30D1;&#x30BF;&#x30FC;&#x30F3;&#x3092;<br>&#x81EA;&#x52D5;&#x8FFD;&#x8A18;&#x3057;&#x6B21;&#x56DE;session&#x3067;load</div>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<div class="cycle-return">
+  <span class="cycle-label">Act</span>
+  <div class="line"></div>
+  <svg width="24" height="16"><path d="M0 8h18l-5-5M18 8l-5 5" stroke="#3B7DD8" fill="none" stroke-width="2"/></svg>
+  <span class="cycle-label">Plan (&#x6B21;&#x56DE;session: DB&#x30AF;&#x30A8;&#x30EA; + CLAUDE.md&#x8AAD;&#x307F;&#x8FBC;&#x307F;)</span>
+</div>
+
+</body>
+</html>

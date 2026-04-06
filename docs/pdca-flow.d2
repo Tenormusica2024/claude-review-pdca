@@ -1,0 +1,155 @@
+# PDCA Cycle - Claude Review System
+# Compact grid layout
+
+direction: down
+
+style: {
+  fill: "#FAFAFA"
+}
+
+title: PDCA Review Cycle - Findings Management System {
+  shape: text
+  style: { font-size: 24; bold: true; font-color: "#2C3E50" }
+}
+
+# ==== Top row: Plan + Do ====
+row1: " " {
+  direction: right
+  style: { fill: transparent; stroke: transparent; font-size: 8 }
+
+  plan: 1. Plan - Findings Injection {
+    style: {
+      fill: "#D4EDFC"; stroke: "#7CB9E8"; border-radius: 12
+      font-size: 88; bold: true; shadow: true
+    }
+
+    hook: PreToolUse Hook\nEdit/Write triggers {
+      width: 200; height: 80
+      style: { fill: "#EBF5FB"; stroke: "#AED6F1"; border-radius: 8; font-size: 84 }
+    }
+    query: SQLite Query\nfile_path + LIMIT 8 {
+      width: 200; height: 80
+      style: { fill: "#EBF5FB"; stroke: "#AED6F1"; border-radius: 8; font-size: 84 }
+    }
+    snr: SNR Filter\nseverity >= warning\ndismissed=0 / 30days {
+      width: 200; height: 80
+      style: { fill: "#EBF5FB"; stroke: "#AED6F1"; border-radius: 8; font-size: 84 }
+    }
+    inject: Context Injection\nPAST FINDINGS block\ntarget file only {
+      width: 200; height: 80
+      style: { fill: "#EBF5FB"; stroke: "#AED6F1"; border-radius: 8; font-size: 84 }
+    }
+
+    hook -> query
+    query -> snr
+    snr -> inject
+  }
+
+  do: 2. Do - Implementation {
+    style: {
+      fill: "#D5F5E3"; stroke: "#7DCEA0"; border-radius: 12
+      font-size: 88; bold: true; shadow: true
+    }
+
+    claude: Claude Code\nimplements with\npast failure context {
+      width: 200; height: 80
+      style: { fill: "#EAFAF1"; stroke: "#A9DFBF"; border-radius: 8; font-size: 84 }
+    }
+    counter: Edit Counter\npost-tool-edit-counter.py\ntracks per session {
+      width: 200; height: 80
+      style: { fill: "#EAFAF1"; stroke: "#A9DFBF"; border-radius: 8; font-size: 84 }
+    }
+    awareness: Failure Awareness\npast findings injected\nanti-pattern avoidance {
+      width: 200; height: 80
+      style: { fill: "#EAFAF1"; stroke: "#A9DFBF"; border-radius: 8; font-size: 84 }
+    }
+
+    claude -> counter
+    claude -> awareness
+  }
+
+  plan -> do
+}
+
+# ==== Bottom row: Check + Act ====
+row2: "  " {
+  direction: right
+  style: { fill: transparent; stroke: transparent; font-size: 8 }
+
+  check: 3. Check - Batch Review {
+    style: {
+      fill: "#FFF3CD"; stroke: "#F0C75E"; border-radius: 12
+      font-size: 88; bold: true; shadow: true
+    }
+
+    trigger: Trigger Conditions\n5 edits / session end\nuser calls /ifr {
+      width: 200; height: 80
+      style: { fill: "#FEF9E7"; stroke: "#F9E79F"; border-radius: 8; font-size: 84 }
+    }
+    batch: batch-review-trigger.py\nlaunches /ifr review {
+      width: 200; height: 80
+      style: { fill: "#FEF9E7"; stroke: "#F9E79F"; border-radius: 8; font-size: 84 }
+    }
+    findings: New Findings\nseverity / category\nfile_path / summary {
+      width: 200; height: 80
+      style: { fill: "#FEF9E7"; stroke: "#F9E79F"; border-radius: 8; font-size: 84 }
+    }
+    output: review-feedback.py\nrecord -> DB insert {
+      width: 200; height: 80
+      style: { fill: "#FEF9E7"; stroke: "#F9E79F"; border-radius: 8; font-size: 84 }
+    }
+
+    trigger -> batch
+    batch -> findings
+    findings -> output
+  }
+
+  act: 4. Act - Learn & Persist {
+    style: {
+      fill: "#FADBD8"; stroke: "#E57373"; border-radius: 12
+      font-size: 88; bold: true; shadow: true
+    }
+
+    db: review-feedback.db\nSQLite storage {
+      shape: cylinder
+      width: 200; height: 80
+      style: { fill: "#E8DAEF"; stroke: "#BB8FCE"; font-size: 84 }
+    }
+    dismiss: User Dismiss\nuser-only approval\nfp_reason recorded {
+      width: 200; height: 80
+      style: { fill: "#FDEDEC"; stroke: "#F5B7B1"; border-radius: 8; font-size: 84 }
+    }
+    learn: session-end-learn.py\ndismissed patterns\n-> CLAUDE.md append {
+      width: 200; height: 80
+      style: { fill: "#FDEDEC"; stroke: "#F5B7B1"; border-radius: 8; font-size: 84 }
+    }
+    claudemd: CLAUDE.md\nfalse positive patterns\nauto-loaded on start {
+      shape: page
+      width: 200; height: 80
+      style: { fill: "#FCF3CF"; stroke: "#F7DC6F"; font-size: 84 }
+    }
+
+    db -> dismiss
+    dismiss -> learn
+    learn -> claudemd
+  }
+
+  check -> act
+}
+
+# ==== Cross connections ====
+row1.plan -> row2.check: review {
+  style: { stroke: "#F0C75E"; stroke-width: 2; stroke-dash: 4 }
+}
+row1.do -> row2.check: 5 edits {
+  style: { stroke: "#7DCEA0"; stroke-width: 2 }
+}
+row2.act -> row1.plan: next session {
+  style: { stroke: "#E57373"; stroke-width: 2 }
+}
+row2.act.db -> row1.plan.query: SELECT {
+  style: { stroke: "#BB8FCE"; stroke-width: 2; stroke-dash: 4 }
+}
+row2.act.claudemd -> row1.plan: load {
+  style: { stroke: "#F7DC6F"; stroke-width: 2; stroke-dash: 4 }
+}

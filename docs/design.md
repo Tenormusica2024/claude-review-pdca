@@ -34,17 +34,15 @@ claude-review-pdca/
 全 findings をコンテキストに流し込まない。
 編集対象ファイルに紐づく findings のみ、LIMIT 8 件に絞って注入する。
 
-```sql
-SELECT id, severity, category, finding_summary
-FROM findings
-WHERE replace(file_path, '\', '/') = replace(:target_file, '\', '/')
-  AND dismissed = 0
-  AND resolution = 'pending'
-ORDER BY
-  CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'warning' THEN 2 ELSE 3 END,
-  id DESC
-LIMIT 8;
-```
+**Phase A（ファイル特化）**: repo_root スコープフィルタで他プロジェクトの findings を除外。
+`OR repo_root IS NULL` で旧データ（Phase 4 以前）にも 30 日間フォールバックする。
+NOT EXISTS サブクエリで `resolution IN ('accepted', 'fixed')` 済みの同一パターンを除外。
+
+**Phase B（プロジェクト横断フォールバック）**: Phase A が 0 件の場合、
+`severity = 'critical'` のみ・LIMIT 5 でプロジェクトルート配下の findings を注入。
+git root が 4 セグメント未満（ドライブルート等）の場合はスキップ。
+
+詳細クエリは `docs/db-schema.md` の標準クエリ集を参照。
 
 ### 2. dismissed は人間が承認する（エージェント自己判断禁止）
 
@@ -84,16 +82,36 @@ Edit のたびに /ifr を自動起動すると：
 
 注入時に除外するもの:
 - dismissed = 1（ユーザー承認済みの不要 finding）
-- resolution != 'pending'（解決済み・accepted 等）
-- severity = 'info'（低優先度。critical/high/warning のみ注入）
-- 直近 30 日以上前の finding（陳腐化リスク）
+- resolution != 'pending'（解決済み・accepted・fixed・stale 等）
+- severity = 'info' / 'nitpick'（低優先度。critical/high/warning のみ注入）
+- 直近 30 日以上前 **かつ** 14 日以内の `last_relevant_edit` もない finding（鮮度 OR 条件）
+- NOT EXISTS で同一パターンが既に `accepted` / `fixed` の finding は再注入しない
 
-```sql
-AND dismissed = 0
-AND resolution = 'pending'
-AND severity IN ('critical', 'high', 'warning')
-AND created_at >= strftime('%Y-%m-%dT%H:%M:%S', 'now', '-30 days')
-```
+セッション内 dedup: `~/.claude/inject-state/{session_id}.txt` に注入済み ID を記録し、
+同一セッションで同じ finding を重複注入しない。
+
+### 6. リポジトリスコープ分離（クロスプロジェクト汚染防止）
+
+`repo_root` カラムで finding をリポジトリ単位に分離する。
+Phase A 注入クエリは `replace(COALESCE(repo_root, ''), '\\', '/') = ?` でスコープを絞り、
+`OR repo_root IS NULL` で Phase 4 以前の旧データにもフォールバックする。
+
+SessionEnd 学習クエリも同様に repo_root フィルタを適用し、
+他プロジェクトの dismissed パターンが CLAUDE.md に混入するのを防止する。
+
+### 7. resolution ライフサイクル
+
+| 値 | 意味 | 遷移条件 |
+|----|------|----------|
+| `pending` | 未解決（デフォルト） | record 時に自動設定 |
+| `accepted` | 指摘を受け入れて修正済み | ユーザー resolve |
+| `rejected_intentional` | 意図的な設計として却下 | ユーザー resolve |
+| `rejected_wrong` | 誤検知として却下 | ユーザー resolve |
+| `fixed` | コミットで解決 | ユーザー resolve |
+| `stale` | TTL 期限切れ | `gc-stale` コマンド（90日超 pending → stale） |
+
+`gc-stale` CLI コマンド: 90 日超の pending findings を自動的に stale に遷移する。
+定期的に実行することで DB の肥大化を防止する。
 
 ## 注入文テンプレート
 
@@ -101,13 +119,23 @@ PreToolUse hook が生成するコンテキスト注入文の形式:
 
 ```
 === PAST FINDINGS: {file_path} ===
-【critical】{category}: {finding_summary}
-【high】{category}: {finding_summary}
-【warning】{category}: {finding_summary}
+【critical】#42 {category}: {finding_summary}
+【high】#38 {category}: {finding_summary}
+【warning】#35 {category}: {finding_summary}
 （{len(findings)} 件を表示）
+誤検知なら: python review-feedback.py dismiss <ID> --reason "理由"
 これらを考慮して編集してください。同じアンチパターンの繰り返しは避けること。
+
+--- 学習済みパターン ---
+[{category}] {fp_reason} （{cnt}回却下）
 === END FINDINGS ===
 ```
+
+**dismiss ディスカバラビリティ**: finding ID をインラインで表示し、dismiss コマンドのワンライナーを添える。
+ユーザーが false positive を即座に dismiss できるようにする（Act フェーズの活性化）。
+
+**FP パターン注入**: ユーザーが 2 回以上 dismiss 承認したカテゴリ＋理由を注入ブロック末尾に表示。
+レビュー時に同パターンの再検出を抑制する（学習ループの可視化）。
 
 ## データフロー図
 
@@ -121,7 +149,9 @@ review-feedback.py record
 review-feedback.db (SQLite)
     │
     ├──▶ PreToolUse hook (pre-tool-inject-findings.py)
-    │        │ file_path フィルタ + SNR フィルタ
+    │        │ Phase A: file_path + repo_root フィルタ + SNR フィルタ + 鮮度 OR 条件
+    │        │ Phase A+: FP パターン注入 + dismiss ディスカバラビリティ
+    │        │ Phase B: project-wide critical フォールバック
     │        ▼
     │    コンテキスト注入 → Claude 実装
     │
@@ -131,7 +161,7 @@ review-feedback.db (SQLite)
     │    /ifr 実行 → 新 findings → DB 追記
     │
     └──▶ SessionEnd hook (session-end-learn.py)
-             │ dismissed（ユーザー承認済み）集計
+             │ dismissed（ユーザー承認済み）集計（repo_root スコープ付き）
              ▼
          CLAUDE.md に false positive パターン追記
 ```
