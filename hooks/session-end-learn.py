@@ -92,6 +92,15 @@ def _find_claude_md(payload: dict) -> tuple[Path | None, str | None]:
 STALE_DAYS = 90  # pending → stale 自動遷移の閾値（gc-stale CLI と同一値）
 
 
+def _sanitize_fp_reason(reason: str) -> str:
+    """fp_reason を CLAUDE.md に安全に書き込める形に整形する。
+    改行をスペースに変換し、先頭 # を全角変換することで CLAUDE.md の構造破損を防ぐ。"""
+    reason = reason.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
+    if reason.startswith("#"):
+        reason = "＃" + reason[1:]  # 全角 ＃ に変換して markdown 見出しとして解釈されないよう
+    return reason[:80]
+
+
 def _gc_stale_findings() -> int:
     """90日以上 pending の findings を stale に自動遷移する。
     セッション終了時に実行することで、明示的な gc-stale CLI 不要にする。
@@ -233,15 +242,6 @@ def main():
 
     if not rows:
         return
-
-    def _sanitize_fp_reason(reason: str) -> str:
-        """fp_reason を CLAUDE.md に安全に書き込める形に整形する。
-        改行をスペースに変換し、先頭 # を全角変換することで CLAUDE.md の構造破損を防ぐ。
-        """
-        reason = reason.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
-        if reason.startswith("#"):
-            reason = "＃" + reason[1:]  # 全角 ＃ に変換して markdown 見出しとして解釈されないよう
-        return reason[:80]
 
     new_entries = [f"- [{r['category']}] {_sanitize_fp_reason(r['fp_reason'] or '')} （{r['cnt']}回承認）" for r in rows]
     # HTMLコメントマーカーで自動生成部分を囲む（ユーザー手動追記を保護する）

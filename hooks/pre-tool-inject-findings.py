@@ -122,7 +122,9 @@ def _get_project_root(file_path: str, cwd: str | None = None) -> str | None:
 
 def get_fp_patterns(conn: sqlite3.Connection, repo_root: str | None) -> list[dict]:
     """学習済み FP パターン（ユーザーが2回以上 dismiss 承認したカテゴリ+理由）を取得する。
-    注入テキスト末尾に追加して、Claude が同パターンの新規指摘を慎重に判断できるようにする。"""
+    注入テキスト末尾に追加して、Claude が同パターンの新規指摘を慎重に判断できるようにする。
+    注: dismissed=1 の finding は _gc_stale_findings (session-end-learn.py) の stale GC 対象外
+    （AND dismissed = 0 条件あり）のため、resolution='pending' で安全にフィルタできる。"""
     try:
         if repo_root:
             rows = conn.execute("""
@@ -194,13 +196,21 @@ def get_findings(
         # repo_root が取得できた場合はスコープフィルタ追加、なければ従来通り
         # 鮮度条件: created_at >= 30日以内 OR last_relevant_edit >= 14日以内
         # last_relevant_edit カラムが未追加の場合は COALESCE で created_at 以前の値にフォールバック
-        freshness_clause = "(created_at >= ? OR COALESCE(last_relevant_edit, '2000-01-01') >= ?)"
+        # 名前付きパラメータで順序依存を排除（保守性向上: 条件追加時のバインド変数ずれを防止）
+        freshness_clause = "(created_at >= :cutoff OR COALESCE(last_relevant_edit, '2000-01-01') >= :relevance_cutoff)"
+        base_params = {
+            "file_path": normalized_path,
+            "cutoff": cutoff,
+            "relevance_cutoff": relevance_cutoff,
+            "inject_limit": INJECT_LIMIT,
+        }
         if repo_root:
+            params = {**base_params, "repo_root": repo_root}
             rows = conn.execute(f"""
                 SELECT id, severity, category, finding_summary
                 FROM findings
-                WHERE replace(file_path, '\\', '/') = ?
-                  AND (replace(COALESCE(repo_root, ''), '\\', '/') = ? OR repo_root IS NULL)
+                WHERE replace(file_path, '\\', '/') = :file_path
+                  AND (replace(COALESCE(repo_root, ''), '\\', '/') = :repo_root OR repo_root IS NULL)
                   AND dismissed = 0
                   AND resolution = 'pending'
                   AND severity IN ('critical', 'high', 'warning')
@@ -211,7 +221,7 @@ def get_findings(
                         AND f2.category        = findings.category
                         AND f2.finding_summary = findings.finding_summary
                         AND f2.resolution      IN ('accepted', 'fixed')
-                        AND (replace(COALESCE(f2.repo_root, ''), '\\', '/') = ?
+                        AND (replace(COALESCE(f2.repo_root, ''), '\\', '/') = :repo_root
                              OR (f2.repo_root IS NULL AND findings.repo_root IS NULL))
                   )
                 ORDER BY
@@ -222,8 +232,8 @@ def get_findings(
                     ELSE 3
                   END,
                   id DESC
-                LIMIT ?
-            """, (normalized_path, repo_root, cutoff, relevance_cutoff, repo_root, INJECT_LIMIT)).fetchall()
+                LIMIT :inject_limit
+            """, params).fetchall()
         else:
             # repo_root なし（git 管理外）: NOT EXISTS に repo_root スコープなし
             # 制限: 他プロジェクトの同名 finding が accepted/fixed の場合に除外される可能性がある
@@ -231,7 +241,7 @@ def get_findings(
             rows = conn.execute(f"""
                 SELECT id, severity, category, finding_summary
                 FROM findings
-                WHERE replace(file_path, '\\', '/') = ?
+                WHERE replace(file_path, '\\', '/') = :file_path
                   AND dismissed = 0
                   AND resolution = 'pending'
                   AND severity IN ('critical', 'high', 'warning')
@@ -251,8 +261,8 @@ def get_findings(
                     ELSE 3
                   END,
                   id DESC
-                LIMIT ?
-            """, (normalized_path, cutoff, relevance_cutoff, INJECT_LIMIT)).fetchall()
+                LIMIT :inject_limit
+            """, base_params).fetchall()
     except sqlite3.OperationalError:
         return [], False, repo_root  # dismissed カラム未追加時はスキップ
 
@@ -282,6 +292,12 @@ def get_findings(
     try:
         # Phase A と同様に last_relevant_edit 鮮度条件を適用
         # critical は見逃すと致命的なため、古くても最近関連ファイルが編集されていれば注入する
+        fallback_params = {
+            "cutoff": cutoff,
+            "relevance_cutoff": relevance_cutoff,
+            "project_filter": project_filter,
+            "fallback_limit": FALLBACK_LIMIT,
+        }
         fallback_rows = conn.execute(f"""
             SELECT id, severity, category, finding_summary
             FROM findings
@@ -289,18 +305,18 @@ def get_findings(
               AND resolution = 'pending'
               AND severity = 'critical'
               AND {freshness_clause}
-              AND LOWER(replace(file_path, '\\', '/')) LIKE LOWER(?)
+              AND LOWER(replace(file_path, '\\', '/')) LIKE LOWER(:project_filter)
               AND NOT EXISTS (
                   SELECT 1 FROM findings f2
                   WHERE replace(f2.file_path, '\\', '/') = replace(findings.file_path, '\\', '/')
                     AND f2.category        = findings.category
                     AND f2.finding_summary = findings.finding_summary
                     AND f2.resolution      IN ('accepted', 'fixed')
-                    AND LOWER(replace(COALESCE(f2.file_path, ''), '\\', '/')) LIKE LOWER(?)
+                    AND LOWER(replace(COALESCE(f2.file_path, ''), '\\', '/')) LIKE LOWER(:project_filter)
               )
             ORDER BY id DESC
-            LIMIT ?
-        """, (cutoff, relevance_cutoff, project_filter, project_filter, FALLBACK_LIMIT)).fetchall()
+            LIMIT :fallback_limit
+        """, fallback_params).fetchall()
     except sqlite3.OperationalError:
         return [], False, repo_root
 

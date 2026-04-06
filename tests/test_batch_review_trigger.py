@@ -82,13 +82,10 @@ class TestResetCounter:
 class TestGetPendingFindings:
     """pending findings 取得のテスト。"""
 
+    @pytest.mark.skip(reason="DB 依存の統合テストが必要。in-memory DB では DB_PATH の exists チェックをバイパスできない")
     def test_returns_pending_findings(self, sample_findings):
         """pending + severity IN (critical, high, warning) の findings を返す。"""
-        with patch.object(trigger_mod, "DB_PATH", Path(":memory:")):
-            # in_memory_db を直接使うため DB_PATH の exists チェックをバイパス
-            pass
-
-        # sample_findings 使用のため直接呼び出さず、DB 依存のテストは統合テストで実施
+        pass
 
     def test_returns_empty_without_db(self, tmp_path):
         """DB が存在しない場合は空リスト。"""
