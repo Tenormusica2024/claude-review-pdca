@@ -63,7 +63,11 @@ def main():
         if not findings_path.exists():
             print(f"ファイルが見つかりません: {args.findings_file}", file=sys.stderr)
             sys.exit(1)
-        findings = json.loads(findings_path.read_text(encoding="utf-8"))
+        try:
+            findings = json.loads(findings_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as e:
+            print(f"JSON パースエラー ({args.findings_file}): {e}", file=sys.stderr)
+            sys.exit(1)
 
     if not isinstance(findings, list):
         print("findings は配列である必要があります", file=sys.stderr)

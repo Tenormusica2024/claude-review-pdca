@@ -157,8 +157,18 @@ def record_pattern(
     Returns: パターンID
     """
     category = validate_category(category)
+    # severity / confidence のバリデーション（不正値はデフォルトにフォールバック）
+    if severity not in ("critical", "warning"):
+        severity = "warning"
+    if confidence not in ("high", "medium"):
+        confidence = "high"
     # パターンテキストの正規化（50文字制限、改行除去）
     pattern_text = pattern_text.replace("\r\n", " ").replace("\n", " ").strip()[:50]
+    # パス正規化（バックスラッシュ→フォワードスラッシュ、重複登録防止）
+    if file_path:
+        file_path = file_path.replace("\\", "/")
+    if repo_root:
+        repo_root = repo_root.replace("\\", "/")
 
     now = datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
     conn = get_connection()
@@ -238,37 +248,32 @@ def get_patterns_for_file(
 
     # file_path 正規化（バックスラッシュ→フォワードスラッシュ）
     normalized_path = file_path.replace("\\", "/")
+    # repo_root も正規化
+    if repo_root:
+        repo_root = repo_root.replace("\\", "/")
 
     conn = get_connection()
     try:
-        params = {
-            "file_path": normalized_path,
-            "repo_root": repo_root,
-        }
-
         # カテゴリ別に detection_count 最大のパターンを1つずつ取得
         # Cool-off: detection_count >= 2（新規パターンは学習対象外）
+        repo_clause = (
+            "AND (replace(COALESCE(repo_root, ''), '\\', '/') = :repo_root OR repo_root IS NULL)"
+            if repo_root else ""
+        )
+        params: dict = {"file_path": normalized_path}
         if repo_root:
-            rows = conn.execute("""
-                SELECT category, pattern_text, severity, detection_count
-                FROM patterns
-                WHERE replace(COALESCE(file_path, ''), '\\', '/') = :file_path
-                  AND (replace(COALESCE(repo_root, ''), '\\', '/') = :repo_root OR repo_root IS NULL)
-                  AND detection_count >= 2
-                ORDER BY
-                    CASE severity WHEN 'critical' THEN 0 ELSE 1 END,
-                    detection_count DESC
-            """, params).fetchall()
-        else:
-            rows = conn.execute("""
-                SELECT category, pattern_text, severity, detection_count
-                FROM patterns
-                WHERE replace(COALESCE(file_path, ''), '\\', '/') = :file_path
-                  AND detection_count >= 2
-                ORDER BY
-                    CASE severity WHEN 'critical' THEN 0 ELSE 1 END,
-                    detection_count DESC
-            """, {"file_path": normalized_path}).fetchall()
+            params["repo_root"] = repo_root
+
+        rows = conn.execute(f"""
+            SELECT category, pattern_text, severity, detection_count
+            FROM patterns
+            WHERE replace(COALESCE(file_path, ''), '\\', '/') = :file_path
+              {repo_clause}
+              AND detection_count >= 2
+            ORDER BY
+                CASE severity WHEN 'critical' THEN 0 ELSE 1 END,
+                detection_count DESC
+        """, params).fetchall()
 
         # カテゴリ別に最頻1件を選出
         seen_categories: set[str] = set()

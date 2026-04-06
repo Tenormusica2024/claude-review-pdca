@@ -41,6 +41,7 @@ def _load_injected_ids(session_id: str) -> set[int]:
         if len(lines) > DEDUP_ROTATION_LIMIT:
             # 新しい半分を残す（古い finding は再注入されても SNR 影響は軽微）
             sliced = lines[len(lines) // 2:]
+            tmp_path = None
             try:
                 # アトミック書き込み: 並列プロセスの append と競合した場合の
                 # ファイル破損を防ぐ（session-end-learn.py と同じパターン）
@@ -48,17 +49,17 @@ def _load_injected_ids(session_id: str) -> set[int]:
                     mode='w', encoding='utf-8',
                     dir=STATE_DIR, suffix='.tmp', delete=False
                 ) as tmp:
-                    tmp.write("\n".join(sliced) + "\n")
                     tmp_path = tmp.name
+                    tmp.write("\n".join(sliced) + "\n")
                 os.replace(tmp_path, str(state_file))
                 lines = sliced  # 書き込み成功時のみ lines を更新（ファイルとメモリの整合性を保証）
             except OSError:
                 # アトミック書き込み失敗時は temp を削除し、lines は元のまま維持
-                # （ファイル内容と一致する状態を保つ）
-                try:
-                    os.unlink(tmp_path)
-                except (OSError, NameError):
-                    pass
+                if tmp_path:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
         return {int(line) for line in lines if line.isdigit()}
     return set()
 
