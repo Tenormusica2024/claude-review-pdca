@@ -21,6 +21,7 @@ if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from config import DB_PATH, INJECT_STATE_DIR as STATE_DIR, normalize_git_root
+from pattern_db import get_patterns_for_file, format_injection_text as format_learned_patterns
 INJECT_LIMIT = 8
 FALLBACK_LIMIT = 5   # Phase B: プロジェクト横断 critical のみに絞るため小さめ
 STALE_DAYS = 30
@@ -418,11 +419,8 @@ def main():
             if findings:
                 outputs.append((fp, findings, is_fallback))
 
-        if not outputs:
-            sys.exit(0)
-
         # FP パターンを1回だけ取得（全ファイル共通で表示。同一 conn を再利用）
-        fp_patterns = get_fp_patterns(conn, first_repo_root)
+        fp_patterns = get_fp_patterns(conn, first_repo_root) if outputs else []
     finally:
         conn.close()
 
@@ -432,6 +430,21 @@ def main():
         injection_texts.append(format_injection(fp, findings, is_fallback, fp_patterns))
         # FP パターンは最初のファイルにのみ追加（重複表示防止）
         fp_patterns = None
+
+    # PDCA v2: review-patterns.db からの学習済みパターン注入
+    # findings の有無に関わらず、対象ファイルに学習済みパターンがあれば注入する
+    for fp in file_paths:
+        try:
+            learned = get_patterns_for_file(fp, repo_root=first_repo_root)
+            learned_text = format_learned_patterns(learned)
+            if learned_text:
+                injection_texts.append(learned_text)
+                break  # 学習済みパターンは1ファイル分のみ（コンテキスト圧迫防止）
+        except Exception:
+            pass  # review-patterns.db 未作成時は静かにスキップ
+
+    if not injection_texts:
+        sys.exit(0)
 
     # stdout に注入文を出力 → Claude Code がコンテキストに追加する
     print("\n\n".join(injection_texts))
