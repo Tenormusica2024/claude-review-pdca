@@ -183,6 +183,7 @@ def get_findings(file_path: str, session_id: str) -> tuple[list[dict], bool, str
                             AND f2.category        = findings.category
                             AND f2.finding_summary = findings.finding_summary
                             AND f2.resolution      IN ('accepted', 'fixed')
+                            AND (replace(COALESCE(f2.repo_root, ''), '\\', '/') = ? OR f2.repo_root IS NULL)
                       )
                     ORDER BY
                       CASE severity
@@ -193,7 +194,7 @@ def get_findings(file_path: str, session_id: str) -> tuple[list[dict], bool, str
                       END,
                       id DESC
                     LIMIT ?
-                """, (normalized_path, repo_root, cutoff, relevance_cutoff, INJECT_LIMIT)).fetchall()
+                """, (normalized_path, repo_root, cutoff, relevance_cutoff, repo_root, INJECT_LIMIT)).fetchall()
             else:
                 rows = conn.execute(f"""
                     SELECT id, severity, category, finding_summary
@@ -224,7 +225,7 @@ def get_findings(file_path: str, session_id: str) -> tuple[list[dict], bool, str
             return [], False, repo_root  # dismissed カラム未追加時はスキップ
 
         # セッション内 dedup: 既注入 ID を除外
-        findings = [dict(r) for r in rows if dict(r)["id"] not in already_injected]
+        findings = [d for r in rows if (d := dict(r))["id"] not in already_injected]
         if findings:
             # Phase 1 で ALTER TABLE が完了するまでカラムが存在しないため OperationalError をスキップ
             _update_injection_tracking(conn, findings, now)
@@ -267,7 +268,7 @@ def get_findings(file_path: str, session_id: str) -> tuple[list[dict], bool, str
             return [], False, repo_root
 
         # セッション内 dedup（Phase B も同様に適用）
-        fallback = [dict(r) for r in fallback_rows if dict(r)["id"] not in already_injected]
+        fallback = [d for r in fallback_rows if (d := dict(r))["id"] not in already_injected]
         if fallback:
             _update_injection_tracking(conn, fallback, now)
             _save_injected_ids(session_id, {f["id"] for f in fallback})

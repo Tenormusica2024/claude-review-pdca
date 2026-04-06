@@ -123,11 +123,11 @@ PreToolUse hook が生成するコンテキスト注入文の形式:
 【high】#38 {category}: {finding_summary}
 【warning】#35 {category}: {finding_summary}
 （{len(findings)} 件を表示）
-💡 dismiss: python review-feedback.py dismiss <ID> "<理由>"
+誤検知なら: python review-feedback.py dismiss <ID> --reason "理由"
 これらを考慮して編集してください。同じアンチパターンの繰り返しは避けること。
 
 --- 学習済みパターン ---
-[{category}] {fp_reason} （{cnt}回承認）
+[{category}] {fp_reason} （{cnt}回却下）
 === END FINDINGS ===
 ```
 

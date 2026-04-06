@@ -100,6 +100,7 @@ WHERE replace(file_path, '\', '/') = :normalized_path
         AND f2.category        = findings.category
         AND f2.finding_summary = findings.finding_summary
         AND f2.resolution      IN ('accepted', 'fixed')
+        AND (replace(COALESCE(f2.repo_root, ''), '\', '/') = :repo_root OR f2.repo_root IS NULL)
   )
 ORDER BY
   CASE severity

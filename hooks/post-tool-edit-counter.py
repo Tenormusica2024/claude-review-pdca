@@ -83,18 +83,20 @@ def main():
         now = datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
         try:
             conn = sqlite3.connect(DB_PATH, timeout=3)
-            for fp in file_paths:
-                try:
-                    conn.execute("""
-                        UPDATE findings
-                        SET last_relevant_edit = ?
-                        WHERE replace(file_path, '\\', '/') = ?
-                          AND resolution = 'pending'
-                    """, (now, fp))
-                except sqlite3.OperationalError:
-                    break  # last_relevant_edit カラム未追加時は全ファイルスキップ
-            conn.commit()
-            conn.close()
+            try:
+                for fp in file_paths:
+                    try:
+                        conn.execute("""
+                            UPDATE findings
+                            SET last_relevant_edit = ?
+                            WHERE replace(file_path, '\\', '/') = ?
+                              AND resolution = 'pending'
+                        """, (now, fp))
+                    except sqlite3.OperationalError:
+                        break  # last_relevant_edit カラム未追加時は全ファイルスキップ
+                conn.commit()
+            finally:
+                conn.close()
         except (sqlite3.OperationalError, sqlite3.DatabaseError):
             pass  # DB 接続失敗時はスキップ（フック失敗でメインフローを止めない）
 
