@@ -82,12 +82,42 @@ def _find_claude_md(payload: dict) -> tuple[Path | None, str | None]:
     return None, repo_root  # プロジェクト固有 CLAUDE.md が見つからない場合はスキップ
 
 
+STALE_DAYS = 90  # pending → stale 自動遷移の閾値（gc-stale CLI と同一値）
+
+
+def _gc_stale_findings() -> int:
+    """90日以上 pending の findings を stale に自動遷移する。
+    セッション終了時に実行することで、明示的な gc-stale CLI 不要にする。
+    Returns: 遷移した件数。"""
+    if not DB_PATH.exists():
+        return 0
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=5)
+        from datetime import datetime, timedelta
+        cutoff = (datetime.now() - timedelta(days=STALE_DAYS)).strftime('%Y-%m-%dT%H:%M:%S')
+        now = datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+        cursor = conn.execute("""
+            UPDATE findings
+            SET resolution = 'stale', resolved_at = ?
+            WHERE resolution = 'pending'
+              AND created_at < ?
+              AND dismissed = 0
+        """, (now, cutoff))
+        count = cursor.rowcount
+        conn.commit()
+        conn.close()
+        return count
+    except (sqlite3.Error, OSError):
+        return 0
+
+
 def _cleanup_inject_state() -> None:
     """
     クリーンアップ処理（main() より先に実行）:
     - 24時間以上古いセッション dedup ファイルを削除
     - 24時間以上古い編集カウントファイルを削除
     - edit-counter.txt（旧グローバル形式）のローテーション（10000行超で古い半分を削除）
+    - 90日超 pending findings の stale 自動遷移
     クリーンアップを main() の前に実行することで、セッション終了時の一括後片付けとして機能させる。
     """
     cutoff = time.time() - 86400  # 24時間
@@ -123,6 +153,11 @@ def _cleanup_inject_state() -> None:
                 legacy_counter.write_text("\n".join(lines[-5000:]) + "\n", encoding="utf-8")
         except OSError:
             pass
+
+    # stale GC: 90日超 pending を自動遷移（セッション終了の度に軽量チェック）
+    stale_count = _gc_stale_findings()
+    if stale_count > 0:
+        print(f"[session-end-learn] {stale_count} 件の古い pending findings を stale に遷移", file=sys.stderr)
 
 
 def main():

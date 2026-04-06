@@ -103,6 +103,50 @@ class TestCleanupInjectState:
         assert recent_file.exists()
 
 
+class TestGcStaleFindings:
+    """stale GC のテスト。"""
+
+    def test_stale_gc_transitions_old_pending(self, in_memory_db):
+        """90日超の pending findings が stale に遷移する。"""
+        conn = in_memory_db
+        from datetime import datetime, timedelta
+        old_date = (datetime.now() - timedelta(days=100)).strftime('%Y-%m-%dT%H:%M:%S')
+        conn.execute("""
+            INSERT INTO findings (reviewer, finding_summary, severity, file_path, resolution, dismissed, created_at)
+            VALUES ('test', 'old finding', 'warning', '/test.py', 'pending', 0, ?)
+        """, (old_date,))
+        conn.commit()
+
+        now = datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+        cutoff = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%dT%H:%M:%S')
+        cursor = conn.execute("""
+            UPDATE findings SET resolution = 'stale', resolved_at = ?
+            WHERE resolution = 'pending' AND created_at < ? AND dismissed = 0
+        """, (now, cutoff))
+        assert cursor.rowcount == 1
+        row = conn.execute("SELECT resolution FROM findings WHERE finding_summary = 'old finding'").fetchone()
+        assert row["resolution"] == "stale"
+
+    def test_stale_gc_keeps_recent(self, in_memory_db):
+        """90日以内の pending は遷移しない。"""
+        conn = in_memory_db
+        from datetime import datetime, timedelta
+        recent_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%dT%H:%M:%S')
+        conn.execute("""
+            INSERT INTO findings (reviewer, finding_summary, severity, file_path, resolution, dismissed, created_at)
+            VALUES ('test', 'recent finding', 'warning', '/test.py', 'pending', 0, ?)
+        """, (recent_date,))
+        conn.commit()
+
+        now = datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+        cutoff = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%dT%H:%M:%S')
+        cursor = conn.execute("""
+            UPDATE findings SET resolution = 'stale', resolved_at = ?
+            WHERE resolution = 'pending' AND created_at < ? AND dismissed = 0
+        """, (now, cutoff))
+        assert cursor.rowcount == 0
+
+
 class TestSanitizeFpReason:
     """fp_reason サニタイズのテスト。"""
 

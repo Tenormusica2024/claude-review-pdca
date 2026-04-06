@@ -280,11 +280,13 @@ class TestFormatInjection:
         assert "#42" in text
 
     def test_dismiss_command_shown(self):
-        """dismiss コマンドのワンライナーが表示される。"""
+        """dismiss コマンドのワンライナーが表示される（一括 dismiss 形式）。"""
         findings = [{"id": 10, "severity": "warning", "category": "style", "finding_summary": "x"}]
         text = format_injection("/test.py", findings)
         assert "review-feedback.py" in text
         assert "dismiss" in text
+        assert "--ids 10" in text
+        assert "--no-interactive" in text
 
     def test_fp_patterns_section(self):
         """FP パターンセクションが表示される。"""

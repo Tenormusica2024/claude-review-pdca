@@ -342,9 +342,9 @@ def format_injection(
     lines.append(f"（{len(findings)} 件を表示）")
     lines.append("これらを考慮して編集してください。同じアンチパターンの繰り返しは避けること。")
 
-    # #1: dismiss コマンドのワンライナー提示（Act フェーズのディスカバラビリティ向上）
-    finding_ids = ", ".join(str(f["id"]) for f in findings[:3])
-    lines.append(f'誤検知なら: python "C:\\Users\\Tenormusica\\.claude\\scripts\\review-feedback.py" dismiss <ID> --reason "理由"  (例: ID={finding_ids})')
+    # dismiss コマンドのワンライナー提示（フリクション最小化: コピペ即実行可能）
+    ids_csv = ",".join(str(f["id"]) for f in findings)
+    lines.append(f'誤検知なら一括dismiss: python "C:\\Users\\Tenormusica\\.claude\\scripts\\review-feedback.py" dismiss --ids {ids_csv} --no-interactive')
 
     # #3: 学習済み FP パターンセクション（ユーザーが2回以上 dismiss 承認したパターン）
     if fp_patterns:
