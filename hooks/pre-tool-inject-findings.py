@@ -9,14 +9,16 @@ import subprocess
 from pathlib import Path
 from datetime import datetime, timedelta
 
+# hook は任意の cwd から実行されるため、config.py がある hooks/ を sys.path に追加
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 # Windows 環境で cp932 stdout に日本語を出力するための UTF-8 強制
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-DB_PATH = Path.home() / ".claude" / "review-feedback.db"
-STATE_DIR = Path.home() / ".claude" / "inject-state"  # セッション別注入済みID管理ディレクトリ
+from config import DB_PATH, INJECT_STATE_DIR as STATE_DIR
 INJECT_LIMIT = 8
 FALLBACK_LIMIT = 5   # Phase B: プロジェクト横断 critical のみに絞るため小さめ
 STALE_DAYS = 30
@@ -46,8 +48,8 @@ def _load_injected_ids(session_id: str) -> set[int]:
 def _save_injected_ids(session_id: str, new_ids: set[int]) -> None:
     """注入済み finding ID を append-only でセッション状態ファイルに追記する（競合耐性）。
 
-    並列 Edit 実行時に複数プロセスが同時に append する競合が発生し得るが、
-    1行 append は OS レベルで原子的なためファイル破損は発生しない。
+    並列 Edit 実行時に複数プロセスが同時に append する競合が発生し得る。
+    POSIX の O_APPEND は原子的だが、Windows の append モードでは保証がない。
     最悪ケースでも同一 finding が 1 回余分に注入されるだけ（SNR への影響は軽微）。
     厳密な排他制御が必要な場合はファイルロックを追加する。
     """
@@ -97,10 +99,14 @@ def _get_project_root(file_path: str, cwd: str | None = None) -> str | None:
             # バックスラッシュをスラッシュに統一し、二重スラッシュを除去して
             # LIKE パターンとの整合性を保つ（UNCパス・git出力ゆれの両方に対応）
             normalized = result.stdout.strip().replace("\\", "/")
-            # 無条件で '//' → '/' 変換（UNC以外でも git 出力ゆれで混入し得るため）
+            # UNCパス（//server/share）の先頭 // は保持し、内部の // のみ除去
+            unc_prefix = ""
+            if normalized.startswith("//"):
+                unc_prefix = "//"
+                normalized = normalized[2:]
             while "//" in normalized:
                 normalized = normalized.replace("//", "/")
-            return normalized
+            return unc_prefix + normalized
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
     # git 管理外ファイルはプロジェクト判定不能 → None を返して Phase B をスキップ
@@ -196,7 +202,8 @@ def get_findings(
                         AND f2.category        = findings.category
                         AND f2.finding_summary = findings.finding_summary
                         AND f2.resolution      IN ('accepted', 'fixed')
-                        AND (replace(COALESCE(f2.repo_root, ''), '\\', '/') = ? OR f2.repo_root IS NULL)
+                        AND (replace(COALESCE(f2.repo_root, ''), '\\', '/') = ?
+                             OR (f2.repo_root IS NULL AND findings.repo_root IS NULL))
                   )
                 ORDER BY
                   CASE severity
@@ -313,7 +320,9 @@ def format_injection(
     if fp_patterns:
         lines.append("--- 学習済みパターン（過去にFPとして却下済み） ---")
         for p in fp_patterns:
-            lines.append(f"  [{p['category']}] {p['fp_reason']} ({p['cnt']}回却下)")
+            # fp_reason 内の改行・制御文字を除去し、長さを制限（コンテキスト圧迫防止）
+            reason = str(p['fp_reason']).replace("\n", " ").replace("\r", "").strip()[:80]
+            lines.append(f"  [{p['category']}] {reason} ({p['cnt']}回却下)")
         lines.append("上記パターンに類似する新規指摘は慎重に判断すること。")
 
     lines.append("=== END FINDINGS ===")
@@ -333,20 +342,22 @@ def main():
     if tool_name not in ("Edit", "Write", "MultiEdit"):
         sys.exit(0)
 
-    # 対象ファイルパスを収集する
+    # 対象ファイルパスを収集し、バックスラッシュをスラッシュに正規化する
     # MultiEdit: 全 edits から重複除去して収集（先頭のみ対象にすると他ファイルの findings が見落とされる）
     file_paths: list[str] = []
     if tool_name == "MultiEdit":
         seen: set[str] = set()
         for edit in tool_input.get("edits", []):
             fp = edit.get("file_path")
-            if fp and fp not in seen:
-                file_paths.append(fp)
-                seen.add(fp)
+            if fp:
+                fp = fp.replace("\\", "/")
+                if fp not in seen:
+                    file_paths.append(fp)
+                    seen.add(fp)
     else:
         fp = tool_input.get("file_path") or tool_input.get("path")
         if fp:
-            file_paths = [fp]
+            file_paths = [fp.replace("\\", "/")]
 
     if not file_paths:
         sys.exit(0)

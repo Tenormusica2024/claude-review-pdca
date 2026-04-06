@@ -56,9 +56,13 @@ stdin → JSON (tool_name, tool_input) 受信
 - **FP パターン注入**: `get_fp_patterns()` でユーザー 2 回以上 dismiss 承認パターンを取得し、注入ブロック末尾に `--- 学習済みパターン ---` セクションとして追加（最初のファイルのみ、重複防止）
 - **Phase B 鮮度 OR 条件**: Phase A と同様に `last_relevant_edit` 鮮度条件を Phase B にも適用（critical は見逃すと致命的なため）
 - **cwd フォールバック**: `_get_project_root(file_path, cwd)` で新規ファイル（親ディレクトリ未存在）時に payload の cwd へフォールバック
-- **UNC パス無条件クリーンアップ**: `_get_project_root()` で `//` → `/` を `startswith` 条件なしで常に適用（git 出力ゆれに対応）
+- **UNC パス先頭保持クリーンアップ**: `_get_project_root()` で UNC パスの先頭 `//` を保持しつつ内部の `//` を除去（`//server/share` を壊さない）
 - **dedup ローテーション**: `_load_injected_ids()` で `DEDUP_ROTATION_LIMIT`（2000行）超過時に古い半分を削除
 - **DB 接続統合**: `main()` で 1 回だけ `sqlite3.connect()` し、`get_findings()` と `get_fp_patterns()` で共有（二重接続排除）
+- **NOT EXISTS repo_root スコープ**: `f2.repo_root IS NULL AND findings.repo_root IS NULL` で旧データの NULL 同士のみマッチさせる（クロスリポジトリ誤除外防止）
+- **fp_reason サニタイズ**: 注入テキスト内の fp_reason を改行除去 + 80文字制限（コンテキスト圧迫防止）
+- **file_paths 収集時正規化**: バックスラッシュをスラッシュに変換してから DB 照合（Windows パス不一致防止）
+- **共通 config モジュール**: `hooks/config.py` で DB_PATH・STATE_DIR・COUNTER_DIR を一元管理（3ファイル間の重複排除）
 
 ### settings.json 登録
 
@@ -187,8 +191,11 @@ if rows and (rows['total'] or 0) > 0:
 - **repo_root スコープ付き学習クエリ**: repo_root が取得できた場合は `replace(COALESCE(repo_root, ''), '\\', '/') = ?` で同一リポジトリの findings のみ学習対象にする。取得できない場合はフィルタなし（git 管理外プロジェクト用フォールバック）
 - **severity ガード**: `severity != 'critical'` で critical を学習対象から除外（false positive パターンとして学習すべきでない）
 - **ホームディレクトリ保護**: `cwd` がホームディレクトリの場合に `~/CLAUDE.md` を掴むのを防ぐチェックを追加
-- **ブロックヘッダー**: `## 学習済み false positive パターン（自動生成）`（日付ラベルなし）
+- **resolution フィルタ**: `AND resolution = 'pending'` で stale 化した findings を学習対象から除外
+- **マーカー分離**: `<!-- auto-generated:fp-patterns -->` ～ `<!-- end-auto-generated:fp-patterns -->` で自動生成部分を囲み、ユーザー手動追記を保護。旧形式（マーカーなし）からの自動移行にも対応
+- **UNC パス先頭保持**: `_find_claude_md()` 内の git パス正規化で UNC 先頭 `//` を保持
 - **アトミック書き込み**: `tempfile.NamedTemporaryFile` → `os.replace()` で lost update を防止
+- **クリーンアップエラーログ**: `_cleanup_inject_state()` の例外を `except Exception` で捕捉し stderr に出力（非致命的エラーを可視化）
 - **クリーンアップ対象**:
   - `~/.claude/inject-state/` 配下の 24 時間以上古いセッション dedup ファイル（`.txt` / `.json`）
   - `~/.claude/edit-counter/` 配下の 24 時間以上古いセッション別カウントファイル

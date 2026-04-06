@@ -146,6 +146,7 @@ WHERE dismissed = 0
 ### dismissed パターン集計（SessionEnd → CLAUDE.md 追記用）
 
 repo_root スコープ付き。`severity != 'critical'` で critical を学習対象から除外。
+`resolution = 'pending'` で stale 化した findings を学習対象から除外。
 
 ```sql
 SELECT category, fp_reason, COUNT(*) AS cnt
@@ -154,6 +155,7 @@ WHERE dismissed = 1
   AND dismissed_by = 'user'
   AND fp_reason IS NOT NULL AND fp_reason != ''
   AND severity != 'critical'
+  AND resolution = 'pending'
   AND replace(COALESCE(repo_root, ''), '\', '/') = :repo_root
 GROUP BY category, fp_reason
 HAVING cnt >= 2

@@ -13,14 +13,16 @@ import sqlite3
 from pathlib import Path
 from datetime import datetime
 
+# hook は任意の cwd から実行されるため、config.py がある hooks/ を sys.path に追加
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 # Windows 環境で cp932 stdout に日本語を出力するための UTF-8 強制
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-COUNTER_DIR = Path.home() / ".claude" / "edit-counter"
-DB_PATH = Path.home() / ".claude" / "review-feedback.db"
+from config import DB_PATH, EDIT_COUNTER_DIR as COUNTER_DIR
 BATCH_THRESHOLD = 5
 # セッション内の最大イベント数（これを超えたら古い半分を削除してローテーション）
 ROTATION_LIMIT = 5000
@@ -64,7 +66,9 @@ def main():
     with open(counter_file, "a", encoding="utf-8") as f:
         f.write("e\n")
 
-    # ファイルパスを追記（重複チェック付き）
+    # ファイルパスを追記（best-effort 重複排除）
+    # read→check→append のため TOCTOU 競合あり。最悪ケースでもファイルパスが
+    # 2 重記録されるだけでバッチレビューの対象リストが増えるのみ（機能上の影響なし）。
     existing_files: set[str] = set()
     if files_file.exists():
         try:

@@ -12,11 +12,10 @@ import tempfile
 import time
 from pathlib import Path
 
-DB_PATH = Path.home() / ".claude" / "review-feedback.db"
-# PreToolUse hook のセッション別 dedup ファイル管理ディレクトリ
-STATE_DIR = Path.home() / ".claude" / "inject-state"
-# PostToolUse hook のセッション別編集カウントディレクトリ
-COUNTER_DIR = Path.home() / ".claude" / "edit-counter"
+# hook は任意の cwd から実行されるため、config.py がある hooks/ を sys.path に追加
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from config import DB_PATH, INJECT_STATE_DIR as STATE_DIR, EDIT_COUNTER_DIR as COUNTER_DIR
 
 
 def _find_claude_md(payload: dict) -> tuple[Path | None, str | None]:
@@ -43,7 +42,14 @@ def _find_claude_md(payload: dict) -> tuple[Path | None, str | None]:
         if result.returncode == 0:
             # バックスラッシュをスラッシュに統一（pre-tool-inject-findings.py と同じ正規化）
             normalized = result.stdout.strip().replace("\\", "/")
-            repo_root = normalized.replace("//", "/") if normalized.startswith("//") else normalized
+            # UNCパス（//server/share）の先頭 // は保持し、内部の // のみ除去
+            unc_prefix = ""
+            if normalized.startswith("//"):
+                unc_prefix = "//"
+                normalized = normalized[2:]
+            while "//" in normalized:
+                normalized = normalized.replace("//", "/")
+            repo_root = unc_prefix + normalized
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
 
@@ -145,6 +151,7 @@ def main():
                       AND fp_reason IS NOT NULL
                       AND fp_reason != ''
                       AND severity != 'critical'
+                      AND resolution = 'pending'
                       AND replace(COALESCE(repo_root, ''), '\\', '/') = ?
                     GROUP BY category, fp_reason
                     HAVING cnt >= 2     -- 2回以上承認されたパターンのみ学習
@@ -161,6 +168,7 @@ def main():
                       AND fp_reason IS NOT NULL
                       AND fp_reason != ''
                       AND severity != 'critical'
+                      AND resolution = 'pending'
                     GROUP BY category, fp_reason
                     HAVING cnt >= 2     -- 2回以上承認されたパターンのみ学習
                     ORDER BY cnt DESC
@@ -189,48 +197,53 @@ def main():
         return reason[:80]
 
     new_entries = [f"- [{r[0]}] {_sanitize_fp_reason(r[1] or '')} （{r[2]}回承認）" for r in rows]
-    # block の先頭は '\n##' （改行1つ + 見出し）。
-    # content 末尾を '\n' に正規化してから結合することで、ファイル内では空行1行が挿入される。
-    # （content末尾\n + block先頭\n = \n\n → 空行1行）
+    # HTMLコメントマーカーで自動生成部分を囲む（ユーザー手動追記を保護する）
+    # ユーザーがマーカー外（見出しの下、開始マーカーの上）に書いた行は置換されない
     # 注意: 日付ラベルは CLAUDE.md に書かない（グローバルルール: 日付・進捗宣言禁止）
-    block = (
-        "\n## 学習済み false positive パターン（自動生成）\n"
-        + "\n".join(new_entries)
-        + "\n"  # 末尾改行: エディタの「末尾改行なし」警告を防ぐ
+    AUTO_START = "<!-- auto-generated:fp-patterns -->"
+    AUTO_END = "<!-- end-auto-generated:fp-patterns -->"
+    auto_block = (
+        AUTO_START + "\n"
+        + "\n".join(new_entries) + "\n"
+        + AUTO_END + "\n"
     )
 
     content = claude_md_path.read_text(encoding="utf-8")
 
-    # 既存の自動追記ブロックを更新（重複防止）
-    # splitlines() で行単位処理（CRLF 対応: re.DOTALL + \n^## パターンが CRLF で誤動作するのを防ぐ）
-    marker = "## 学習済み false positive パターン"
-    if any(line.startswith(marker) for line in content.splitlines()):
+    section_header = "## 学習済み false positive パターン（自動生成）"
+
+    if AUTO_START in content and AUTO_END in content:
+        # マーカーが存在する場合: マーカー間のみ置換（ユーザー追記は保持）
+        start_idx = content.index(AUTO_START)
+        end_idx = content.index(AUTO_END) + len(AUTO_END)
+        # AUTO_END 直後の改行も含めて置換
+        if end_idx < len(content) and content[end_idx] == "\n":
+            end_idx += 1
+        content = content[:start_idx] + auto_block + content[end_idx:]
+    elif any(line.rstrip("\r\n").startswith("## 学習済み false positive パターン") for line in content.splitlines()):
+        # 旧形式（マーカーなし）の既存ブロックを新形式に移行
+        # splitlines() で行単位処理（CRLF 対応）
         lines = content.splitlines(keepends=True)
         result_lines = []
         in_block = False
         for line in lines:
             stripped = line.rstrip("\r\n")
-            if stripped.startswith(marker):
+            if stripped.startswith("## 学習済み false positive パターン"):
                 in_block = True
                 continue
             if in_block and re.match(r'^#{1,6}\s', stripped):
-                # 次のセクション開始で block 終了
-                # 末尾ブロックの場合: 次のセクション見出しが現れずに for を抜けるため
-                # in_block=True のままループ終了するが、そのブロック内の行は
-                # result_lines に一切追加されていないため、末尾ブロックは正しく削除済み。
-                # re.sub(r'[\r\n]+$', '\n', ...) が残存する余分な空行を吸収するため
-                # ファイル末尾の整形も保証される。
                 in_block = False
                 result_lines.append(line)
                 continue
             if not in_block:
                 result_lines.append(line)
-        # 末尾の改行を正規化: 余分な改行を除去して \n 1つに統一
-        # block が '\n##' 始まりのため、content 末尾が \n1つなら \n\n（空行1行）が挿入される
         content = re.sub(r'[\r\n]+$', '\n', "".join(result_lines))
+        # 新形式のブロック（見出し + マーカー）を末尾に追加
+        content += "\n" + section_header + "\n" + auto_block
     else:
-        # 既存ブロックがない場合も末尾を \n 1つに正規化
+        # 既存ブロックがない場合: 見出し + マーカー付きブロックを末尾に追加
         content = re.sub(r'[\r\n]+$', '\n', content)
+        content += "\n" + section_header + "\n" + auto_block
 
     # アトミック書き込み: temp ファイルに書いてから os.replace でアトミックに置換する
     # CLAUDE.md の同時書き込みによる lost update を防ぐ（NTFS では MoveFileEx がアトミック）
@@ -259,6 +272,6 @@ if __name__ == "__main__":
     # クリーンアップを main() より先に実行（セッション終了時の後片付けとして機能させる）
     try:
         _cleanup_inject_state()
-    except OSError:
-        pass
+    except Exception as e:
+        print(f"[session-end-learn] cleanup error (non-fatal): {e}", file=sys.stderr)
     main()
