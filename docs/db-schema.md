@@ -47,6 +47,12 @@ CREATE TABLE findings (
 | `fixed` | コミットで解決 | ユーザー resolve |
 | `stale` | TTL 期限切れ | `gc-stale` コマンド（90日超 pending → stale） |
 
+### dismissed と resolution の独立ライフサイクル
+
+`dismissed` と `resolution` は独立した状態管理。dismiss 操作は `resolution` を変更しない。
+- `dismissed=1, resolution='pending'` が FP 学習クエリの対象（SessionEnd / PreToolUse）
+- dismiss 操作で `resolution` を `rejected_wrong` に遷移させる運用に変更する場合は、学習クエリの `AND resolution = 'pending'` を除去する必要がある
+
 ## review_sessions テーブル
 
 レビューセッション（inject → record/close のライフサイクル）を管理するテーブル。

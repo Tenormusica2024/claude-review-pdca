@@ -107,6 +107,8 @@ def _cleanup_inject_state() -> None:
                 pass
 
     # edit-counter.txt（旧グローバル形式）のローテーション（後方互換）
+    # 注意: read_text → write_text 間に別プロセスが append すると lost update が起きる。
+    # ただし旧形式はもう新規生成されないため、残存ファイルのサイズ抑制が目的。
     legacy_counter = Path.home() / ".claude" / "edit-counter.txt"
     if legacy_counter.exists():
         try:
@@ -143,38 +145,31 @@ def main():
         try:
             # severity ガード: critical の findings は auto-promotion 禁止（明示的 opt-in のみ）
             # repo_root フィルタ: 他プロジェクトの dismissed パターンを学習しない（クロスコンタミネーション防止）
+            # repo_root あり→スコープフィルタ付き / なし→フィルタなし（git 管理外からの SessionEnd）
+            base_query = """
+                SELECT category, fp_reason, COUNT(*) AS cnt
+                FROM findings
+                WHERE dismissed = 1
+                  AND dismissed_by = 'user'
+                  AND fp_reason IS NOT NULL
+                  AND fp_reason != ''
+                  AND severity != 'critical'
+                  AND resolution = 'pending'
+                  {repo_filter}
+                GROUP BY category, fp_reason
+                HAVING cnt >= 2     -- 2回以上承認されたパターンのみ学習
+                ORDER BY cnt DESC
+                LIMIT 20
+            """
             if repo_root:
-                raw = conn.execute("""
-                    SELECT category, fp_reason, COUNT(*) AS cnt
-                    FROM findings
-                    WHERE dismissed = 1
-                      AND dismissed_by = 'user'
-                      AND fp_reason IS NOT NULL
-                      AND fp_reason != ''
-                      AND severity != 'critical'
-                      AND resolution = 'pending'
-                      AND replace(COALESCE(repo_root, ''), '\\', '/') = ?
-                    GROUP BY category, fp_reason
-                    HAVING cnt >= 2     -- 2回以上承認されたパターンのみ学習
-                    ORDER BY cnt DESC
-                    LIMIT 20
-                """, (repo_root,)).fetchall()
+                raw = conn.execute(
+                    base_query.format(repo_filter="AND replace(COALESCE(repo_root, ''), '\\', '/') = ?"),
+                    (repo_root,)
+                ).fetchall()
             else:
-                # repo_root 不明時はフィルタなし（git 管理外からの SessionEnd）
-                raw = conn.execute("""
-                    SELECT category, fp_reason, COUNT(*) AS cnt
-                    FROM findings
-                    WHERE dismissed = 1
-                      AND dismissed_by = 'user'
-                      AND fp_reason IS NOT NULL
-                      AND fp_reason != ''
-                      AND severity != 'critical'
-                      AND resolution = 'pending'
-                    GROUP BY category, fp_reason
-                    HAVING cnt >= 2     -- 2回以上承認されたパターンのみ学習
-                    ORDER BY cnt DESC
-                    LIMIT 20
-                """).fetchall()
+                raw = conn.execute(
+                    base_query.format(repo_filter="")
+                ).fetchall()
             # sqlite3.Row は接続クローズ後の参照が不安定なため、
             # conn.close() を呼ぶ前に Python ネイティブの dict に変換する
             rows = [dict(r) for r in raw]
@@ -209,7 +204,8 @@ def main():
         + AUTO_END + "\n"
     )
 
-    content = claude_md_path.read_text(encoding="utf-8")
+    # utf-8-sig: BOM 付き UTF-8 ファイルの BOM を自動除去（Windows エディタが BOM を付与する場合がある）
+    content = claude_md_path.read_text(encoding="utf-8-sig")
 
     section_header = "## 学習済み false positive パターン（自動生成）"
 
@@ -272,13 +268,16 @@ def main():
             tmp_path = tmp.name
         os.replace(tmp_path, str(claude_md_path))
     except OSError as e:
-        # アトミック書き込み失敗時は temp ファイルを削除してフォールバック
+        # アトミック書き込み失敗時は temp ファイルを削除して直接書き込みにフォールバック
         if tmp_path:
             try:
                 os.unlink(tmp_path)
             except OSError:
                 pass
-        print(f"[session-end-learn] CLAUDE.md 書き込みエラー: {e}", file=sys.stderr)
+        try:
+            claude_md_path.write_text(content, encoding="utf-8")
+        except OSError as e2:
+            print(f"[session-end-learn] CLAUDE.md 書き込みエラー（フォールバックも失敗）: {e} / {e2}", file=sys.stderr)
 
 
 if __name__ == "__main__":

@@ -49,9 +49,11 @@ def main():
         seen: set[str] = set()
         for edit in tool_input.get("edits", []):
             fp = edit.get("file_path")
-            if fp and fp not in seen:
-                file_paths.append(fp.replace("\\", "/"))
-                seen.add(fp)
+            if fp:
+                normalized = fp.replace("\\", "/")
+                if normalized not in seen:
+                    file_paths.append(normalized)
+                    seen.add(normalized)
     else:
         fp = tool_input.get("file_path") or tool_input.get("path")
         if fp:
@@ -124,7 +126,7 @@ def main():
 
     # BATCH_THRESHOLD に達したら通知（レビュー提案のみ・強制実行しない）
     if count > 0 and count % BATCH_THRESHOLD == 0:
-        print(f"💡 {count} 件の編集が完了しました。/ifr でレビューを実行することを推奨します。")
+        print(f"[提案] {count} 件の編集が完了しました。/ifr でレビューを実行することを推奨します。")
 
     sys.exit(0)
 
