@@ -71,7 +71,22 @@ def _find_claude_md(payload: dict) -> tuple[Path | None, str | None]:
     if candidate.exists() and candidate.resolve() != home_claude_md:
         return candidate, repo_root
 
-    return None, repo_root  # プロジェクト固有 CLAUDE.md が見つからない場合はスキップ
+    # git リポジトリルートが判明しているのに CLAUDE.md がない場合は新規作成
+    # （リポジトリ作成時の漏れとみなす。ホームディレクトリ直下への作成は防止）
+    if repo_root:
+        candidate = Path(repo_root) / "CLAUDE.md"
+        if candidate.resolve() != home_claude_md:
+            try:
+                candidate.write_text(
+                    f"# Claude Code Instructions - {Path(repo_root).name}\n",
+                    encoding="utf-8"
+                )
+                print(f"[session-end-learn] CLAUDE.md を新規作成: {candidate}", file=sys.stderr)
+                return candidate, repo_root
+            except OSError:
+                pass  # 書き込み権限がない場合はスキップ
+
+    return None, repo_root  # CLAUDE.md が作成できなかった場合はスキップ
 
 
 STALE_DAYS = 90  # pending → stale 自動遷移の閾値（gc-stale CLI と同一値）
