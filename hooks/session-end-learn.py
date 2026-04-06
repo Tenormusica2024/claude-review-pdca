@@ -15,6 +15,12 @@ from pathlib import Path
 # hook は任意の cwd から実行されるため、config.py がある hooks/ を sys.path に追加
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+# Windows 環境で cp932 stdout に日本語を出力するための UTF-8 強制
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 from config import DB_PATH, INJECT_STATE_DIR as STATE_DIR, EDIT_COUNTER_DIR as COUNTER_DIR
 
 
@@ -257,27 +263,36 @@ def main():
 
     # アトミック書き込み: temp ファイルに書いてから os.replace でアトミックに置換する
     # CLAUDE.md の同時書き込みによる lost update を防ぐ（NTFS では MoveFileEx がアトミック）
-    tmp_path = None  # except ブロックで未定義の場合の NameError を防ぐ
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode='w', encoding='utf-8',
-            dir=claude_md_path.parent,
-            suffix='.tmp', delete=False
-        ) as tmp:
-            tmp.write(content)
-            tmp_path = tmp.name
-        os.replace(tmp_path, str(claude_md_path))
-    except OSError as e:
-        # アトミック書き込み失敗時は temp ファイルを削除して直接書き込みにフォールバック
-        if tmp_path:
-            try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+    # リトライ: Windows で他プロセス（VSCode, Obsidian 等）がファイルをロックしている場合の
+    # PermissionError に対応。1回リトライ（0.5秒待機）で多くのケースを救える。
+    max_attempts = 2
+    for attempt in range(max_attempts):
+        tmp_path = None  # except ブロックで未定義の場合の NameError を防ぐ
         try:
-            claude_md_path.write_text(content, encoding="utf-8")
-        except OSError as e2:
-            print(f"[session-end-learn] CLAUDE.md 書き込みエラー（フォールバックも失敗）: {e} / {e2}", file=sys.stderr)
+            with tempfile.NamedTemporaryFile(
+                mode='w', encoding='utf-8',
+                dir=claude_md_path.parent,
+                suffix='.tmp', delete=False
+            ) as tmp:
+                tmp.write(content)
+                tmp_path = tmp.name
+            os.replace(tmp_path, str(claude_md_path))
+            break  # 成功したらループ終了
+        except OSError as e:
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+            if attempt < max_attempts - 1:
+                # リトライ前に短い待機（ファイルロック解放を待つ）
+                time.sleep(0.5)
+                continue
+            # 最終試行も失敗: 直接書き込みにフォールバック
+            try:
+                claude_md_path.write_text(content, encoding="utf-8")
+            except OSError as e2:
+                print(f"[session-end-learn] CLAUDE.md 書き込みエラー（フォールバックも失敗）: {e} / {e2}", file=sys.stderr)
 
 
 if __name__ == "__main__":

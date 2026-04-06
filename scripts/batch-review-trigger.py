@@ -29,14 +29,16 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+# hook は任意の cwd から実行されるため、config.py がある hooks/ を sys.path に追加
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "hooks"))
+
 # Windows 環境で cp932 stdout に日本語を出力するための UTF-8 強制
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-DB_PATH = Path.home() / ".claude" / "review-feedback.db"
-COUNTER_DIR = Path.home() / ".claude" / "edit-counter"
+from config import DB_PATH, EDIT_COUNTER_DIR as COUNTER_DIR
 DEFAULT_THRESHOLD = 5
 STALE_DAYS = 30
 # バッチレビュー用: より広めに取得（ファイル単位ではなくプロジェクト横断）
@@ -200,7 +202,7 @@ def _format_batch_report(findings: list[dict], edit_count: int, threshold: int, 
             kv[0]  # file_path: 同一優先度内での出力順序を一定に保つ
         )
     ):
-        lines.append(f"📁 {file_path}")
+        lines.append(f"[FILE] {file_path}")
         for f in file_findings:
             sev = f.get("severity", "?").upper()
             cat = f.get("category") or "?"

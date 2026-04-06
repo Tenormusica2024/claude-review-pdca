@@ -300,9 +300,17 @@ def get_findings(
               AND severity = 'critical'
               AND {freshness_clause}
               AND LOWER(replace(file_path, '\\', '/')) LIKE LOWER(?)
+              AND NOT EXISTS (
+                  SELECT 1 FROM findings f2
+                  WHERE replace(f2.file_path, '\\', '/') = replace(findings.file_path, '\\', '/')
+                    AND f2.category        = findings.category
+                    AND f2.finding_summary = findings.finding_summary
+                    AND f2.resolution      IN ('accepted', 'fixed')
+                    AND LOWER(replace(COALESCE(f2.file_path, ''), '\\', '/')) LIKE LOWER(?)
+              )
             ORDER BY id DESC
             LIMIT ?
-        """, (cutoff, relevance_cutoff, project_filter, FALLBACK_LIMIT)).fetchall()
+        """, (cutoff, relevance_cutoff, project_filter, project_filter, FALLBACK_LIMIT)).fetchall()
     except sqlite3.OperationalError:
         return [], False, repo_root
 
