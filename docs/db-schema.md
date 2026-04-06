@@ -84,8 +84,10 @@ CREATE INDEX IF NOT EXISTS idx_review_sessions_status ON review_sessions(status)
 ### ファイル特化注入クエリ（PreToolUse hook Phase A）
 
 repo_root スコープフィルタ付き。`OR repo_root IS NULL` で旧データ（Phase 4 以前の INSERT）にもマッチする。
+repo_root が取得できない場合（git 管理外）は repo_root スコープフィルタなしで実行する（NOT EXISTS も同様にスコープなし）。
 
 ```sql
+-- repo_root あり版（git 管理下）
 SELECT id, severity, category, finding_summary
 FROM findings
 WHERE replace(file_path, '\', '/') = :normalized_path
@@ -100,7 +102,8 @@ WHERE replace(file_path, '\', '/') = :normalized_path
         AND f2.category        = findings.category
         AND f2.finding_summary = findings.finding_summary
         AND f2.resolution      IN ('accepted', 'fixed')
-        AND (replace(COALESCE(f2.repo_root, ''), '\', '/') = :repo_root OR f2.repo_root IS NULL)
+        AND (replace(COALESCE(f2.repo_root, ''), '\', '/') = :repo_root
+             OR (f2.repo_root IS NULL AND findings.repo_root IS NULL))
   )
 ORDER BY
   CASE severity
@@ -174,6 +177,7 @@ WHERE dismissed = 1
   AND dismissed_by = 'user'
   AND fp_reason IS NOT NULL AND fp_reason != ''
   AND severity != 'critical'
+  AND resolution = 'pending'
   AND (replace(COALESCE(repo_root, ''), '\', '/') = :repo_root OR repo_root IS NULL)
 GROUP BY category, fp_reason
 HAVING cnt >= 2

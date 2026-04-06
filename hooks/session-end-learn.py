@@ -53,24 +53,24 @@ def _find_claude_md(payload: dict) -> tuple[Path | None, str | None]:
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
 
+    # グローバル CLAUDE.md（~/CLAUDE.md）への誤書き込みを防ぐ共通チェック
+    # cwd やホームディレクトリ直下で実行された場合に C:\Users\<user>\CLAUDE.md を掴まないようにする
+    home_claude_md = (Path.home() / "CLAUDE.md").resolve()
+
     # CLAUDE.md 探索: cwd → git root → Path.cwd() の順にフォールバック
     if cwd_str:
         candidate = Path(cwd_str) / "CLAUDE.md"
-        if candidate.exists():
+        if candidate.exists() and candidate.resolve() != home_claude_md:
             return candidate, repo_root
 
     if repo_root:
         candidate = Path(repo_root) / "CLAUDE.md"
-        if candidate.exists():
+        if candidate.exists() and candidate.resolve() != home_claude_md:
             return candidate, repo_root
 
     # 3. Path.cwd() フォールバック
     candidate = Path.cwd() / "CLAUDE.md"
-    if candidate.exists():
-        # グローバル CLAUDE.md（~/.CLAUDE.md 相当）への誤書き込みを防ぐ:
-        # cwd がホームディレクトリの場合に C:\Users\<user>\CLAUDE.md を掴んでしまうケースを除外
-        if candidate.resolve() == (Path.home() / "CLAUDE.md").resolve():
-            return None, repo_root
+    if candidate.exists() and candidate.resolve() != home_claude_md:
         return candidate, repo_root
 
     return None, repo_root  # プロジェクト固有 CLAUDE.md が見つからない場合はスキップ
@@ -97,7 +97,7 @@ def _cleanup_inject_state() -> None:
                 except OSError:
                     pass  # 削除失敗は無視（別プロセスが使用中の可能性）
 
-    # edit-counter: セッション別ファイルを削除
+    # edit-counter: セッション別ファイルを削除（{session_id}.txt と {session_id}_files.txt の両方を含む）
     if COUNTER_DIR.exists():
         for f in COUNTER_DIR.glob("*.txt"):
             try:
@@ -135,6 +135,7 @@ def main():
     # try/finally で明示的に close() する
     try:
         conn = sqlite3.connect(DB_PATH, timeout=5)
+        conn.row_factory = sqlite3.Row  # pre-tool-inject-findings.py と一貫性を保つ
     except sqlite3.Error:
         return
     try:
@@ -175,8 +176,8 @@ def main():
                     LIMIT 20
                 """).fetchall()
             # sqlite3.Row は接続クローズ後の参照が不安定なため、
-            # conn.close() を呼ぶ前に Python ネイティブの tuple に変換する
-            rows = [tuple(r) for r in raw]
+            # conn.close() を呼ぶ前に Python ネイティブの dict に変換する
+            rows = [dict(r) for r in raw]
         except sqlite3.OperationalError:
             return  # dismissed カラム未追加時はスキップ
     except sqlite3.Error:
@@ -196,7 +197,7 @@ def main():
             reason = "＃" + reason[1:]  # 全角 ＃ に変換して markdown 見出しとして解釈されないよう
         return reason[:80]
 
-    new_entries = [f"- [{r[0]}] {_sanitize_fp_reason(r[1] or '')} （{r[2]}回承認）" for r in rows]
+    new_entries = [f"- [{r['category']}] {_sanitize_fp_reason(r['fp_reason'] or '')} （{r['cnt']}回承認）" for r in rows]
     # HTMLコメントマーカーで自動生成部分を囲む（ユーザー手動追記を保護する）
     # ユーザーがマーカー外（見出しの下、開始マーカーの上）に書いた行は置換されない
     # 注意: 日付ラベルは CLAUDE.md に書かない（グローバルルール: 日付・進捗宣言禁止）
@@ -225,6 +226,7 @@ def main():
         # splitlines() で行単位処理（CRLF 対応）
         lines = content.splitlines(keepends=True)
         result_lines = []
+        preserved_user_lines = []  # ユーザー手動追記を保護する
         in_block = False
         for line in lines:
             stripped = line.rstrip("\r\n")
@@ -235,11 +237,23 @@ def main():
                 in_block = False
                 result_lines.append(line)
                 continue
-            if not in_block:
+            if in_block:
+                # 旧形式ブロック内の行: 自動生成エントリ（"- [" で始まる）以外はユーザー追記として保護
+                if not stripped.startswith("- ["):
+                    if stripped:  # 空行は除外
+                        preserved_user_lines.append(line)
+            else:
                 result_lines.append(line)
         content = re.sub(r'[\r\n]+$', '\n', "".join(result_lines))
         # 新形式のブロック（見出し + マーカー）を末尾に追加
-        content += "\n" + section_header + "\n" + auto_block
+        # ユーザー手動追記があれば auto_block の前に挿入して保護する
+        if preserved_user_lines:
+            user_block = "".join(preserved_user_lines)
+            if not user_block.endswith("\n"):
+                user_block += "\n"
+            content += "\n" + section_header + "\n" + user_block + auto_block
+        else:
+            content += "\n" + section_header + "\n" + auto_block
     else:
         # 既存ブロックがない場合: 見出し + マーカー付きブロックを末尾に追加
         content = re.sub(r'[\r\n]+$', '\n', content)
@@ -247,7 +261,6 @@ def main():
 
     # アトミック書き込み: temp ファイルに書いてから os.replace でアトミックに置換する
     # CLAUDE.md の同時書き込みによる lost update を防ぐ（NTFS では MoveFileEx がアトミック）
-    # block は '\n## で始まるため content 末尾の \n と合わせて \n\n（空行1行）が挿入される
     tmp_path = None  # except ブロックで未定義の場合の NameError を防ぐ
     try:
         with tempfile.NamedTemporaryFile(
@@ -255,7 +268,7 @@ def main():
             dir=claude_md_path.parent,
             suffix='.tmp', delete=False
         ) as tmp:
-            tmp.write(content + block)
+            tmp.write(content)
             tmp_path = tmp.name
         os.replace(tmp_path, str(claude_md_path))
     except OSError as e:

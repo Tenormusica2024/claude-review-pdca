@@ -124,6 +124,7 @@ def get_fp_patterns(conn: sqlite3.Connection, repo_root: str | None) -> list[dic
                 WHERE dismissed = 1 AND dismissed_by = 'user'
                   AND fp_reason IS NOT NULL AND fp_reason != ''
                   AND severity != 'critical'
+                  AND resolution = 'pending'
                   AND (replace(COALESCE(repo_root, ''), '\\', '/') = ? OR repo_root IS NULL)
                 GROUP BY category, fp_reason
                 HAVING cnt >= 2
@@ -137,6 +138,7 @@ def get_fp_patterns(conn: sqlite3.Connection, repo_root: str | None) -> list[dic
                 WHERE dismissed = 1 AND dismissed_by = 'user'
                   AND fp_reason IS NOT NULL AND fp_reason != ''
                   AND severity != 'critical'
+                  AND resolution = 'pending'
                 GROUP BY category, fp_reason
                 HAVING cnt >= 2
                 ORDER BY cnt DESC
@@ -216,6 +218,9 @@ def get_findings(
                 LIMIT ?
             """, (normalized_path, repo_root, cutoff, relevance_cutoff, repo_root, INJECT_LIMIT)).fetchall()
         else:
+            # repo_root なし（git 管理外）: NOT EXISTS に repo_root スコープなし
+            # 制限: 他プロジェクトの同名 finding が accepted/fixed の場合に除外される可能性がある
+            # git 管理外ファイルは稀なため、この制限は許容する
             rows = conn.execute(f"""
                 SELECT id, severity, category, finding_summary
                 FROM findings

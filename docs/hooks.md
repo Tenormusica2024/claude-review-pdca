@@ -190,13 +190,14 @@ if rows and (rows['total'] or 0) > 0:
   - 探索順: `payload["cwd"]` → `git rev-parse --show-toplevel` → `Path.cwd()` の 3 段フォールバック
 - **repo_root スコープ付き学習クエリ**: repo_root が取得できた場合は `replace(COALESCE(repo_root, ''), '\\', '/') = ?` で同一リポジトリの findings のみ学習対象にする。取得できない場合はフィルタなし（git 管理外プロジェクト用フォールバック）
 - **severity ガード**: `severity != 'critical'` で critical を学習対象から除外（false positive パターンとして学習すべきでない）
-- **ホームディレクトリ保護**: `cwd` がホームディレクトリの場合に `~/CLAUDE.md` を掴むのを防ぐチェックを追加
+- **ホームディレクトリ保護**: 全候補（cwd・git root・Path.cwd()）で `~/CLAUDE.md` への書き込みを防ぐ共通チェック
 - **resolution フィルタ**: `AND resolution = 'pending'` で stale 化した findings を学習対象から除外
-- **マーカー分離**: `<!-- auto-generated:fp-patterns -->` ～ `<!-- end-auto-generated:fp-patterns -->` で自動生成部分を囲み、ユーザー手動追記を保護。旧形式（マーカーなし）からの自動移行にも対応
+- **マーカー分離**: `<!-- auto-generated:fp-patterns -->` ～ `<!-- end-auto-generated:fp-patterns -->` で自動生成部分を囲み、ユーザー手動追記を保護。旧形式（マーカーなし）からの自動移行時も、自動生成エントリ（`- [` で始まる行）以外のユーザー追記を保護して auto_block の前に挿入する
+- **fp_reason サニタイズ**: `_sanitize_fp_reason()` で改行→スペース変換 + 先頭 `#` の全角変換 + 80文字制限（CLAUDE.md 構造破損防止）
 - **UNC パス先頭保持**: `_find_claude_md()` 内の git パス正規化で UNC 先頭 `//` を保持
 - **アトミック書き込み**: `tempfile.NamedTemporaryFile` → `os.replace()` で lost update を防止
 - **クリーンアップエラーログ**: `_cleanup_inject_state()` の例外を `except Exception` で捕捉し stderr に出力（非致命的エラーを可視化）
 - **クリーンアップ対象**:
   - `~/.claude/inject-state/` 配下の 24 時間以上古いセッション dedup ファイル（`.txt` / `.json`）
-  - `~/.claude/edit-counter/` 配下の 24 時間以上古いセッション別カウントファイル
+  - `~/.claude/edit-counter/` 配下の 24 時間以上古いセッション別カウントファイル（`{session_id}.txt` + `{session_id}_files.txt`）
   - `~/.claude/edit-counter.txt`（旧グローバル形式）の 10000 行超ローテーション（後方互換）
