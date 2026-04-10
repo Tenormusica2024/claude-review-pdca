@@ -101,3 +101,75 @@ class TestMainEntryPoint:
                 with pytest.raises(SystemExit) as exc_info:
                     inject_mod.main()
         assert exc_info.value.code == 0
+
+    def test_learned_patterns_are_injected_once_per_session(self, sample_findings, tmp_path, capsys):
+        """learned patterns は同一 session で毎回再注入しない。"""
+        payload = json.dumps({
+            "tool_name": "Edit",
+            "tool_input": {"file_path": "C:/project/hooks/main.py"},
+            "session_id": "integration_sess",
+        })
+
+        import sqlite3
+        db_path = tmp_path / "test.db"
+        file_conn = sqlite3.connect(str(db_path))
+        sample_findings.backup(file_conn)
+        file_conn.close()
+
+        state_dir = tmp_path / "state"
+
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.read.return_value = payload
+            with patch.object(inject_mod, "DB_PATH", db_path):
+                with patch.object(inject_mod, "STATE_DIR", state_dir):
+                    with patch.object(inject_mod, "_get_project_root", return_value="C:/project"):
+                        with patch.object(inject_mod, "get_patterns_for_file", return_value=[{"category": "logic", "pattern_text": "off-by-one", "severity": "warning", "count": 2}]):
+                            with patch.object(inject_mod, "format_learned_patterns", return_value="[LEARNED PATTERNS]\n- off-by-one"):
+                                with patch.object(inject_mod, "_should_inject_learned_patterns", return_value=True):
+                                    with pytest.raises(SystemExit):
+                                        inject_mod.main()
+
+        first = capsys.readouterr()
+        assert "[LEARNED PATTERNS]" in first.out
+
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.read.return_value = payload
+            with patch.object(inject_mod, "DB_PATH", db_path):
+                with patch.object(inject_mod, "STATE_DIR", state_dir):
+                    with patch.object(inject_mod, "_get_project_root", return_value="C:/project"):
+                        with patch.object(inject_mod, "get_patterns_for_file", return_value=[{"category": "logic", "pattern_text": "off-by-one", "severity": "warning", "count": 2}]):
+                            with patch.object(inject_mod, "format_learned_patterns", return_value="[LEARNED PATTERNS]\n- off-by-one"):
+                                with patch.object(inject_mod, "_should_inject_learned_patterns", return_value=True):
+                                    with pytest.raises(SystemExit):
+                                        inject_mod.main()
+
+        second = capsys.readouterr()
+        assert "[LEARNED PATTERNS]" not in second.out
+
+    def test_learned_patterns_are_skipped_without_implementation_gate(self, sample_findings, tmp_path, capsys):
+        """implementation gate が false の場合は learned patterns を注入しない。"""
+        payload = json.dumps({
+            "tool_name": "Edit",
+            "tool_input": {"file_path": "C:/project/hooks/main.py"},
+            "session_id": "integration_sess",
+        })
+
+        import sqlite3
+        db_path = tmp_path / "test.db"
+        file_conn = sqlite3.connect(str(db_path))
+        sample_findings.backup(file_conn)
+        file_conn.close()
+
+        with patch("sys.stdin") as mock_stdin:
+            mock_stdin.read.return_value = payload
+            with patch.object(inject_mod, "DB_PATH", db_path):
+                with patch.object(inject_mod, "STATE_DIR", tmp_path / "state"):
+                    with patch.object(inject_mod, "_get_project_root", return_value="C:/project"):
+                        with patch.object(inject_mod, "get_patterns_for_file", return_value=[{"category": "logic", "pattern_text": "off-by-one", "severity": "warning", "count": 2}]):
+                            with patch.object(inject_mod, "format_learned_patterns", return_value="[LEARNED PATTERNS]\n- off-by-one"):
+                                with patch.object(inject_mod, "_should_inject_learned_patterns", return_value=False):
+                                    with pytest.raises(SystemExit):
+                                        inject_mod.main()
+
+        captured = capsys.readouterr()
+        assert "[LEARNED PATTERNS]" not in captured.out

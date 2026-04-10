@@ -13,8 +13,20 @@ INJECT_STATE_DIR = Path.home() / ".claude" / "inject-state"
 # PostToolUse hook: セッション別編集カウントディレクトリ
 EDIT_COUNTER_DIR = Path.home() / ".claude" / "edit-counter"
 
+# GLM classifier fallback の append-only ログディレクトリ
+GLM_CLASSIFIER_LOG_DIR = Path.home() / ".claude" / "logs"
+GLM_FALLBACK_LOG_PATH = GLM_CLASSIFIER_LOG_DIR / "glm-classifier-fallbacks.jsonl"
+GLM_SUPPRESSION_LOOKBACK = 10
+GLM_HTTP_429_SUPPRESSION_THRESHOLD = 3
+
 # review-feedback.py CLI スクリプトパス（dismiss コマンド等で参照）
 REVIEW_FEEDBACK_SCRIPT = str(Path.home() / ".claude" / "scripts" / "review-feedback.py")
+
+# GLM 分類・軽量 hook 用の Z.ai Anthropic 互換 API 設定
+ZAI_ANTHROPIC_BASE_URL = "https://api.z.ai/api/anthropic"
+GLM_API_URL = f"{ZAI_ANTHROPIC_BASE_URL}/v1/messages"
+GLM_MODEL = "glm-5.1"
+ANTHROPIC_VERSION = "2023-06-01"
 
 
 def normalize_git_root(raw_output: str) -> str:

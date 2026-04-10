@@ -37,6 +37,42 @@ VALID_CATEGORIES = frozenset({
 })
 
 
+def _is_absolute_path(path: str) -> bool:
+    """Windows/UNC/Unix 風の絶対パスかを判定する。"""
+    return path.startswith("//") or path.startswith("/") or (len(path) >= 3 and path[1] == ":" and path[2] == "/")
+
+
+def _build_file_path_candidates(file_path: str, repo_root: str | None) -> list[str]:
+    """absolute/relative 両方の候補を返す。"""
+    normalized = file_path.replace("\\", "/")
+    candidates = {normalized}
+    if not repo_root:
+        return sorted(candidates)
+
+    normalized_root = repo_root.replace("\\", "/").rstrip("/")
+    prefix = normalized_root.lower() + "/"
+    if normalized.lower().startswith(prefix):
+        candidates.add(normalized[len(normalized_root) + 1:])
+    elif not _is_absolute_path(normalized):
+        candidates.add(f"{normalized_root}/{normalized}")
+    return sorted(candidates)
+
+
+def _normalize_file_path_for_storage(file_path: str | None, repo_root: str | None) -> str | None:
+    """repo_root 配下は relative path に正規化して保存する。"""
+    if not file_path:
+        return None
+    normalized = file_path.replace("\\", "/")
+    if not repo_root:
+        return normalized
+
+    normalized_root = repo_root.replace("\\", "/").rstrip("/")
+    prefix = normalized_root.lower() + "/"
+    if normalized.lower().startswith(prefix):
+        return normalized[len(normalized_root) + 1:]
+    return normalized
+
+
 def _ensure_db(conn: sqlite3.Connection) -> None:
     """テーブルが存在しなければ作成する。"""
     conn.execute("""
@@ -167,7 +203,7 @@ def record_pattern(
     pattern_text = pattern_text.replace("\r\n", " ").replace("\n", " ").strip()[:80]
     # パス正規化（バックスラッシュ→フォワードスラッシュ、重複登録防止）
     if file_path:
-        file_path = file_path.replace("\\", "/")
+        file_path = _normalize_file_path_for_storage(file_path, repo_root)
     if repo_root:
         repo_root = repo_root.replace("\\", "/")
 
@@ -248,7 +284,7 @@ def get_patterns_for_file(
         return []
 
     # file_path 正規化（バックスラッシュ→フォワードスラッシュ）
-    normalized_path = file_path.replace("\\", "/")
+    path_candidates = _build_file_path_candidates(file_path, repo_root)
     # repo_root も正規化
     if repo_root:
         repo_root = repo_root.replace("\\", "/")
@@ -258,17 +294,16 @@ def get_patterns_for_file(
         # カテゴリ別に detection_count 最大のパターンを1つずつ取得
         # Cool-off: detection_count >= 2（新規パターンは学習対象外）
         repo_clause = (
-            "AND (replace(COALESCE(repo_root, ''), '\\', '/') = :repo_root OR repo_root IS NULL)"
+            "AND (replace(COALESCE(repo_root, ''), '\\', '/') = ? OR repo_root IS NULL)"
             if repo_root else ""
         )
-        params: dict = {"file_path": normalized_path}
-        if repo_root:
-            params["repo_root"] = repo_root
+        path_placeholders = ",".join("?" * len(path_candidates))
+        params: tuple = (*path_candidates, repo_root) if repo_root else tuple(path_candidates)
 
         rows = conn.execute(f"""
             SELECT category, pattern_text, severity, detection_count
             FROM patterns
-            WHERE replace(COALESCE(file_path, ''), '\\', '/') = :file_path
+            WHERE replace(COALESCE(file_path, ''), '\\', '/') IN ({path_placeholders})
               {repo_clause}
               AND detection_count >= 2
             ORDER BY

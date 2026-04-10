@@ -83,6 +83,21 @@ class TestRecordPattern:
         assert pid is not None
         assert pid > 0
 
+    def test_record_normalizes_repo_relative_path(self):
+        """repo_root 配下の absolute path は relative path で保存される。"""
+        pid = record_pattern(
+            category="logic",
+            pattern_text="boundary bug",
+            file_path="C:/project/src/main.py",
+            repo_root="C:/project",
+        )
+        conn = get_connection()
+        try:
+            row = conn.execute("SELECT file_path FROM patterns WHERE id = ?", (pid,)).fetchone()
+            assert row["file_path"] == "src/main.py"
+        finally:
+            conn.close()
+
     def test_duplicate_increments_count(self):
         """同一パターンの再記録で detection_count が増加する。"""
         pid1 = record_pattern(
@@ -223,6 +238,11 @@ class TestGetPatternsForFile:
     def test_backslash_normalization(self):
         """バックスラッシュのパスでも正しく取得できる。"""
         patterns = get_patterns_for_file("src\\main.py", repo_root="C:/project")
+        assert len(patterns) == 2
+
+    def test_matches_relative_rows_for_absolute_input(self):
+        """absolute 入力でも relative 保存 rows を取得できる。"""
+        patterns = get_patterns_for_file("C:/project/src/main.py", repo_root="C:/project")
         assert len(patterns) == 2
 
 

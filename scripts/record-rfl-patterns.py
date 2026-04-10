@@ -105,10 +105,14 @@ def main():
                 summary=summary,
                 severity=severity,
                 file_path=file_path,
+                reviewer=args.reviewer,
+                repo_root=repo_root,
             )
             category = classification["category"]
             source = classification.get("source", "unknown")
-            print(f"  GLM分類: {summary[:40]}... → {category} ({source})", file=sys.stderr)
+            fallback_reason = classification.get("fallback_reason")
+            reason_suffix = f", reason={fallback_reason}" if fallback_reason else ""
+            print(f"  GLM分類: {summary[:40]}... → {category} ({source}{reason_suffix})", file=sys.stderr)
         elif not category:
             category = "maintainability"
         # file_path の正規化（バックスラッシュ→スラッシュ）
