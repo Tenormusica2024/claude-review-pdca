@@ -8,6 +8,7 @@ import os
 import sqlite3
 import subprocess
 import tempfile
+import hashlib
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -20,7 +21,13 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-from config import DB_PATH, INJECT_STATE_DIR as STATE_DIR, normalize_git_root, REVIEW_FEEDBACK_SCRIPT
+from config import (
+    DB_PATH,
+    INJECT_STATE_DIR as STATE_DIR,
+    LEARNED_PATTERN_LOG_PATH,
+    REVIEW_FEEDBACK_SCRIPT,
+    normalize_git_root,
+)
 from pattern_db import get_patterns_for_file, format_injection_text as format_learned_patterns
 INJECT_LIMIT = 8
 FALLBACK_LIMIT = 5   # Phase B: プロジェクト横断 critical のみに絞るため小さめ
@@ -144,6 +151,48 @@ def _save_learned_pattern_keys(session_id: str, keys: set[str]) -> None:
             f.write(f"{key}\n")
 
 
+def _append_learned_pattern_event(
+    session_id: str | None,
+    repo_root: str | None,
+    file_path: str,
+    tool_name: str,
+    learned: list[dict],
+    reviewer: str | None = None,
+) -> None:
+    """learned patterns 注入イベントを append-only JSONL に記録する。"""
+    if not learned:
+        return
+    if os.environ.get("PYTEST_CURRENT_TEST") and os.environ.get("LEARNED_PATTERN_ENABLE_TEST_LOGGING") != "1":
+        return
+
+    normalized_repo_root = repo_root.replace("\\", "/").rstrip("/") if repo_root else None
+    normalized_file_path = file_path.replace("\\", "/")
+    if normalized_repo_root and normalized_file_path.lower().startswith(normalized_repo_root.lower() + "/"):
+        normalized_file_path = normalized_file_path[len(normalized_repo_root) + 1:]
+
+    categories = sorted({str(item.get("category") or "unknown") for item in learned})
+    try:
+        LEARNED_PATTERN_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        event = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "session_id": session_id or "",
+            "reviewer": reviewer,
+            "repo_root": normalized_repo_root,
+            "file_path": normalized_file_path,
+            "tool_name": tool_name,
+            "pattern_count": len(learned),
+            "categories": categories,
+            "pattern_hashes": [
+                hashlib.sha1(str(item.get("pattern_text") or "").encode("utf-8")).hexdigest()[:12]
+                for item in learned
+            ],
+        }
+        with LEARNED_PATTERN_LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except OSError as e:
+        print(f"[pre-tool-inject-findings] learned pattern log write failed: {e}", file=sys.stderr)
+
+
 def _load_implementation_gate() -> dict | None:
     """implementation session detector が書いたメタデータを読む。"""
     try:
@@ -155,6 +204,34 @@ def _load_implementation_gate() -> dict | None:
     except (OSError, json.JSONDecodeError):
         return None
     return None
+
+
+def _get_learned_pattern_reviewer(
+    session_id: str | None,
+    repo_root: str | None,
+    cwd: str | None = None,
+) -> str | None:
+    """implementation gate から learned-pattern 注入の reviewer 相当を推定する。"""
+    gate = _load_implementation_gate()
+    if not gate:
+        return None
+
+    gate_session_id = str(gate.get("session_id") or gate.get("sessionId") or "")
+    gate_repo_root = str(gate.get("repo_root") or gate.get("repoRoot") or "").replace("\\", "/").rstrip("/")
+    normalized_repo_root = (repo_root or "").replace("\\", "/").rstrip("/")
+    normalized_cwd = (cwd or "").replace("\\", "/").rstrip("/")
+    if not (
+        (session_id and gate_session_id and session_id == gate_session_id)
+        or (gate_repo_root and normalized_repo_root and gate_repo_root == normalized_repo_root)
+        or (gate_repo_root and normalized_cwd and normalized_cwd.startswith(gate_repo_root))
+    ):
+        return None
+
+    matched_markers = gate.get("matched_markers") or gate.get("matchedMarkers") or []
+    if not isinstance(matched_markers, list) or not matched_markers:
+        return None
+    marker = str(matched_markers[0]).strip()
+    return marker or None
 
 
 def _should_inject_learned_patterns(
@@ -583,6 +660,14 @@ def main():
                 learned_text = format_learned_patterns(learned)
                 if learned_text:
                     injection_texts.append(learned_text)
+                    _append_learned_pattern_event(
+                        session_id,
+                        first_repo_root,
+                        fp,
+                        tool_name,
+                        learned,
+                        reviewer=_get_learned_pattern_reviewer(session_id, first_repo_root, cwd=cwd),
+                    )
                     newly_injected_learned.add(learned_key)
                     break  # 学習済みパターンは1ファイル分のみ（コンテキスト圧迫防止）
             except Exception:

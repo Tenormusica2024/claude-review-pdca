@@ -19,6 +19,9 @@ GLM_FALLBACK_LOG_PATH = GLM_CLASSIFIER_LOG_DIR / "glm-classifier-fallbacks.jsonl
 GLM_SUPPRESSION_LOOKBACK = 10
 GLM_HTTP_429_SUPPRESSION_THRESHOLD = 3
 
+# learned patterns 注入観測用の append-only ログ
+LEARNED_PATTERN_LOG_PATH = GLM_CLASSIFIER_LOG_DIR / "learned-pattern-injections.jsonl"
+
 # review-feedback.py CLI スクリプトパス（dismiss コマンド等で参照）
 REVIEW_FEEDBACK_SCRIPT = str(Path.home() / ".claude" / "scripts" / "review-feedback.py")
 

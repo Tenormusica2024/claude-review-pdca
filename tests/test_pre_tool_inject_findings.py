@@ -23,6 +23,8 @@ _load_injected_ids = inject_mod._load_injected_ids
 _save_injected_ids = inject_mod._save_injected_ids
 _load_learned_pattern_keys = inject_mod._load_learned_pattern_keys
 _save_learned_pattern_keys = inject_mod._save_learned_pattern_keys
+_append_learned_pattern_event = inject_mod._append_learned_pattern_event
+_get_learned_pattern_reviewer = inject_mod._get_learned_pattern_reviewer
 _should_inject_learned_patterns = inject_mod._should_inject_learned_patterns
 _update_injection_tracking = inject_mod._update_injection_tracking
 get_findings = inject_mod.get_findings
@@ -92,6 +94,60 @@ class TestLearnedPatternState:
             _save_learned_pattern_keys("test_sess", {"repo::src/a.py", "repo::src/b.py"})
             result = _load_learned_pattern_keys("test_sess")
         assert result == {"repo::src/a.py", "repo::src/b.py"}
+
+    def test_append_learned_pattern_event_writes_jsonl(self, tmp_path):
+        log_path = tmp_path / "learned-pattern-injections.jsonl"
+        learned = [
+            {"category": "logic", "pattern_text": "off-by-one", "count": 2},
+            {"category": "security", "pattern_text": "auth token leak", "count": 3},
+        ]
+        with patch.dict("os.environ", {"LEARNED_PATTERN_ENABLE_TEST_LOGGING": "1"}, clear=False):
+            with patch.object(inject_mod, "LEARNED_PATTERN_LOG_PATH", log_path):
+                _append_learned_pattern_event(
+                    session_id="sess1",
+                    repo_root="C:/project",
+                    file_path="C:/project/src/main.py",
+                    tool_name="Edit",
+                    learned=learned,
+                    reviewer="sc-rfl",
+                )
+
+        event = json.loads(log_path.read_text(encoding="utf-8").splitlines()[0])
+        assert event["session_id"] == "sess1"
+        assert event["reviewer"] == "sc-rfl"
+        assert event["repo_root"] == "C:/project"
+        assert event["file_path"] == "src/main.py"
+        assert event["tool_name"] == "Edit"
+        assert event["pattern_count"] == 2
+        assert event["categories"] == ["logic", "security"]
+        assert len(event["pattern_hashes"]) == 2
+
+    def test_append_learned_pattern_event_is_disabled_under_pytest_by_default(self, tmp_path):
+        log_path = tmp_path / "learned-pattern-injections.jsonl"
+        with patch.object(inject_mod, "LEARNED_PATTERN_LOG_PATH", log_path):
+            _append_learned_pattern_event(
+                session_id="sess1",
+                repo_root="C:/project",
+                file_path="C:/project/src/main.py",
+                tool_name="Edit",
+                learned=[{"category": "logic", "pattern_text": "off-by-one"}],
+            )
+
+        assert not log_path.exists()
+
+    def test_get_learned_pattern_reviewer_from_gate(self, tmp_path):
+        gate_file = tmp_path / "implementation-session.json"
+        gate_file.write_text(
+            json.dumps({
+                "session_id": "sess1",
+                "repo_root": "C:/project",
+                "matched_markers": ["sc-rfl", "/rfl"],
+            }),
+            encoding="utf-8",
+        )
+        with patch.object(inject_mod, "IMPLEMENTATION_SESSION_PATH", gate_file):
+            reviewer = _get_learned_pattern_reviewer("sess1", "C:/project")
+        assert reviewer == "sc-rfl"
 
 
 class TestImplementationGate:

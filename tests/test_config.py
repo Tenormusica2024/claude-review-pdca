@@ -14,6 +14,7 @@ from config import (
     GLM_MODEL,
     GLM_SUPPRESSION_LOOKBACK,
     INJECT_STATE_DIR,
+    LEARNED_PATTERN_LOG_PATH,
     ZAI_ANTHROPIC_BASE_URL,
     normalize_git_root,
 )
@@ -57,6 +58,10 @@ class TestConfig:
     def test_glm_fallback_log_path_name(self):
         """GLM fallback ログファイル名。"""
         assert GLM_FALLBACK_LOG_PATH.name == "glm-classifier-fallbacks.jsonl"
+
+    def test_learned_pattern_log_path_name(self):
+        """learned pattern 注入ログファイル名。"""
+        assert LEARNED_PATTERN_LOG_PATH.name == "learned-pattern-injections.jsonl"
 
     def test_glm_suppression_lookback(self):
         """GLM 抑制判定の直近参照件数。"""

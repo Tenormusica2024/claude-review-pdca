@@ -38,6 +38,10 @@ def _copy_required_runtime_files(temp_home: Path) -> tuple[Path, Path]:
         repo_dir / "scripts" / "summarize-glm-fallbacks.py",
     )
     shutil.copy2(
+        REPO_ROOT / "scripts" / "summarize-learned-pattern-injections.py",
+        repo_dir / "scripts" / "summarize-learned-pattern-injections.py",
+    )
+    shutil.copy2(
         REPO_ROOT / "scripts" / "record-rfl-patterns.py",
         repo_dir / "scripts" / "record-rfl-patterns.py",
     )
@@ -125,22 +129,65 @@ def e2e_runtime(tmp_path) -> E2ERuntime:
 def _seed_review_feedback_db(db_path: Path, repo_root: str) -> None:
     conn = sqlite3.connect(db_path)
     try:
-        conn.execute(
+        conn.executemany(
             """
             INSERT INTO findings (
                 repo_root, reviewer, finding_summary, severity, category, resolution,
                 project, file_path, dismissed, injected_count
-            ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, 0, 0)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 0)
             """,
-            (
-                repo_root,
-                "review-fix-loop",
-                "rate-limit fallback should stay visible",
-                "warning",
-                "robustness",
-                "claude-review-pdca",
-                "hooks/glm_classifier.py",
-            ),
+            [
+                (
+                    repo_root,
+                    "review-fix-loop",
+                    "rate-limit fallback should stay visible",
+                    "warning",
+                    "robustness",
+                    "pending",
+                    "claude-review-pdca",
+                    "hooks/glm_classifier.py",
+                ),
+                (
+                    repo_root,
+                    "review-fix-loop",
+                    "learned pattern was fixed once",
+                    "warning",
+                    "logic",
+                    "fixed",
+                    "claude-review-pdca",
+                    "src/app/main.py",
+                ),
+                (
+                    repo_root,
+                    "review-fix-loop",
+                    "learned pattern was accepted once",
+                    "warning",
+                    "logic",
+                    "accepted",
+                    "claude-review-pdca",
+                    "src/app/main.py",
+                ),
+                (
+                    repo_root,
+                    "intent-first-review",
+                    "same file fixed by another reviewer",
+                    "warning",
+                    "logic",
+                    "fixed",
+                    "claude-review-pdca",
+                    "src/app/main.py",
+                ),
+                (
+                    repo_root,
+                    "review-fix-loop",
+                    "learned pattern still pending once",
+                    "warning",
+                    "logic",
+                    "pending",
+                    "claude-review-pdca",
+                    "src/app/main.py",
+                ),
+            ],
         )
         conn.commit()
     finally:
@@ -245,6 +292,38 @@ def _seed_pretool_findings_db(db_path: Path, repo_root: str, file_path: str) -> 
         conn.close()
 
 
+def _seed_learned_pattern_log(temp_home: Path, repo_root: str) -> None:
+    log_path = temp_home / ".claude" / "logs" / "learned-pattern-injections.jsonl"
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    rows = [
+        {
+            "ts": "2026-04-10T00:00:10",
+            "session_id": "sess-impl",
+            "repo_root": repo_root,
+            "file_path": "src/app/main.py",
+            "tool_name": "Edit",
+            "reviewer": "sc-rfl",
+            "pattern_count": 2,
+            "categories": ["logic", "security"],
+            "pattern_hashes": ["abc123def456", "def456abc123"],
+        },
+        {
+            "ts": "2026-04-10T00:00:11",
+            "session_id": "sess-impl",
+            "repo_root": repo_root,
+            "file_path": "src/app/main.py",
+            "tool_name": "Write",
+            "reviewer": "sc-rfl",
+            "pattern_count": 1,
+            "categories": ["logic"],
+            "pattern_hashes": ["abc123def456"],
+        },
+    ]
+    with log_path.open("w", encoding="utf-8") as fh:
+        for row in rows:
+            fh.write(json.dumps(row, ensure_ascii=False) + "\n")
+
+
 def _seed_patterns_db(temp_home: Path, file_path: str, repo_root: str) -> None:
     db_path = temp_home / ".claude" / "review-patterns.db"
     conn = sqlite3.connect(db_path)
@@ -301,6 +380,7 @@ def test_session_start_hook_and_summary_e2e(e2e_runtime):
 
     _seed_review_feedback_db(runtime.db_path, runtime.repo_root)
     _seed_glm_fallback_log(runtime.temp_home, runtime.repo_root)
+    _seed_learned_pattern_log(runtime.temp_home, runtime.repo_root)
 
     summary = runtime.python(
         str(runtime.temp_home / ".claude" / "scripts" / "review-feedback.py"), "summary",
@@ -309,6 +389,16 @@ def test_session_start_hook_and_summary_e2e(e2e_runtime):
     assert "GLM classifier fallback summary:" in summary.stdout
     assert "recent by reviewer:" in summary.stdout
     assert "review-fix-loop: http_429=2, suppressed_http_429=1" in summary.stdout
+    assert "Learned pattern injection summary:" in summary.stdout
+    assert "total injections: 2" in summary.stdout
+    assert "top files:" in summary.stdout
+    assert "src/app/main.py: 2" in summary.stdout
+    assert "file effectiveness snapshot:" in summary.stdout
+    assert "src/app/main.py: pending=1, fixed=2, accepted=1" in summary.stdout
+    assert "by reviewer:" in summary.stdout
+    assert "sc-rfl: 2" in summary.stdout
+    assert "reviewer effectiveness snapshot:" in summary.stdout
+    assert "review-fix-loop | src/app/main.py: pending=1, fixed=1, accepted=1" in summary.stdout
 
     hook_result = runtime.node(
         runtime.temp_home / ".claude" / "hooks" / "review-feedback-session-check.js",
@@ -318,11 +408,16 @@ def test_session_start_hook_and_summary_e2e(e2e_runtime):
     payload = json.loads(hook_result.stdout)
     additional_context = payload["hookSpecificOutput"]["additionalContext"]
 
-    assert "=== PENDING REVIEW FINDINGS: 1件 ===" in additional_context
+    assert "=== PENDING REVIEW FINDINGS: 2件 ===" in additional_context
     assert "=== GLM CLASSIFIER SOFT ALERT ===" in additional_context
     assert "- recent http_429: 3 件" in additional_context
     assert "- recent suppressed_http_429: 1 件" in additional_context
     assert "- top reviewer: review-fix-loop (http_429=2, suppressed_http_429=1)" in additional_context
+    assert "=== LEARNED PATTERN SIGNAL ===" in additional_context
+    assert "- recent injections: 2 件" in additional_context
+    assert "- top file: src/app/main.py (2)" in additional_context
+    assert "- top reviewer: sc-rfl (2)" in additional_context
+    assert "- top reviewer effectiveness: pending=1, fixed=1, accepted=1" in additional_context
 
 
 @pytest.mark.skipif(shutil.which("git") is None, reason="git is required for hook E2E")

@@ -118,6 +118,8 @@ class TestMainEntryPoint:
 
         state_dir = tmp_path / "state"
 
+        log_path = tmp_path / "learned-pattern-injections.jsonl"
+
         with patch("sys.stdin") as mock_stdin:
             mock_stdin.read.return_value = payload
             with patch.object(inject_mod, "DB_PATH", db_path):
@@ -126,11 +128,15 @@ class TestMainEntryPoint:
                         with patch.object(inject_mod, "get_patterns_for_file", return_value=[{"category": "logic", "pattern_text": "off-by-one", "severity": "warning", "count": 2}]):
                             with patch.object(inject_mod, "format_learned_patterns", return_value="[LEARNED PATTERNS]\n- off-by-one"):
                                 with patch.object(inject_mod, "_should_inject_learned_patterns", return_value=True):
-                                    with pytest.raises(SystemExit):
-                                        inject_mod.main()
+                                    with patch.object(inject_mod, "LEARNED_PATTERN_LOG_PATH", log_path):
+                                        with patch.dict("os.environ", {"LEARNED_PATTERN_ENABLE_TEST_LOGGING": "1"}, clear=False):
+                                            with pytest.raises(SystemExit):
+                                                inject_mod.main()
 
         first = capsys.readouterr()
         assert "[LEARNED PATTERNS]" in first.out
+        first_events = log_path.read_text(encoding="utf-8").splitlines()
+        assert len(first_events) == 1
 
         with patch("sys.stdin") as mock_stdin:
             mock_stdin.read.return_value = payload
@@ -140,11 +146,15 @@ class TestMainEntryPoint:
                         with patch.object(inject_mod, "get_patterns_for_file", return_value=[{"category": "logic", "pattern_text": "off-by-one", "severity": "warning", "count": 2}]):
                             with patch.object(inject_mod, "format_learned_patterns", return_value="[LEARNED PATTERNS]\n- off-by-one"):
                                 with patch.object(inject_mod, "_should_inject_learned_patterns", return_value=True):
-                                    with pytest.raises(SystemExit):
-                                        inject_mod.main()
+                                    with patch.object(inject_mod, "LEARNED_PATTERN_LOG_PATH", log_path):
+                                        with patch.dict("os.environ", {"LEARNED_PATTERN_ENABLE_TEST_LOGGING": "1"}, clear=False):
+                                            with pytest.raises(SystemExit):
+                                                inject_mod.main()
 
         second = capsys.readouterr()
         assert "[LEARNED PATTERNS]" not in second.out
+        second_events = log_path.read_text(encoding="utf-8").splitlines()
+        assert len(second_events) == 1
 
     def test_learned_patterns_are_skipped_without_implementation_gate(self, sample_findings, tmp_path, capsys):
         """implementation gate が false の場合は learned patterns を注入しない。"""
