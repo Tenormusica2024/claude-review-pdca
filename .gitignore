@@ -1,5 +1,7 @@
 __pycache__/
 *.pyc
+.coverage
+.pytest_cache/
 .letta/
 .playwright-cli/
 docs/.playwright-cli/

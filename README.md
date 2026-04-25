@@ -1,5 +1,8 @@
 # claude-review-pdca
 
+[![test](https://github.com/Tenormusica2024/claude-review-pdca/actions/workflows/test.yml/badge.svg?branch=master)](https://github.com/Tenormusica2024/claude-review-pdca/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
+
 A closed-loop PDCA (Plan-Do-Check-Act) system that automatically surfaces past code review findings during implementation, enabling Claude Code to learn from its own mistakes.
 
 ## The Problem
