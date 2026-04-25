@@ -5,6 +5,14 @@
 
 A closed-loop PDCA (Plan-Do-Check-Act) system that automatically surfaces past code review findings during implementation, enabling Claude Code to learn from its own mistakes.
 
+**Best for teams already using Claude Code review skills** who want past findings to come back automatically at edit time instead of being forgotten after one review pass.
+
+## At a glance
+
+- Re-injects past findings only when the relevant file is being edited
+- Tracks edit activity and triggers batch review at controlled intervals
+- Learns confirmed false-positive patterns and writes durable guidance back to project instructions
+
 ## The Problem
 
 Claude Code's review skills (`/ifr`, `/review-fix-loop`, etc.) detect bugs, design issues, and anti-patterns -- but findings are stored once and forgotten. The next coding session starts from zero, with no memory of past mistakes. A bulk "you have N pending findings" notification at session start is noise; developers ignore it.
