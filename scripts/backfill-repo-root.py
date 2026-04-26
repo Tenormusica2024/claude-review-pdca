@@ -150,6 +150,9 @@ def main():
         for row in remaining_rows:
             fid = row["id"]
             sid = row["session_id"]
+            # Phase 1 で既に解決済みの ID をスキップ（二重 UPDATE 防止）
+            if fid not in remaining_ids:
+                continue
             if sid in session_root_map:
                 root = session_root_map[sid]
                 updates.append((root, fid))

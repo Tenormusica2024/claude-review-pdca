@@ -41,6 +41,7 @@ if hasattr(sys.stderr, "reconfigure"):
 from config import DB_PATH, EDIT_COUNTER_DIR as COUNTER_DIR
 DEFAULT_THRESHOLD = 5
 STALE_DAYS = 30
+RELEVANCE_DAYS = 14  # last_relevant_edit 鮮度ウィンドウ（pre-tool-inject-findings.py と一致させる）
 # バッチレビュー用: より広めに取得（ファイル単位ではなくプロジェクト横断）
 BATCH_FINDINGS_LIMIT = 20
 
@@ -93,6 +94,8 @@ def _get_pending_findings(project_root: str | None) -> list[dict]:
 
     # pre-tool-inject-findings.py と統一: DB の created_at (秒精度) との文字列比較で誤差を防ぐ
     cutoff = (datetime.now() - timedelta(days=STALE_DAYS)).strftime('%Y-%m-%dT%H:%M:%S')
+    # last_relevant_edit は短縮ウィンドウ（RELEVANCE_DAYS）で判定（pre-tool-inject-findings.py と同一基準）
+    relevance_cutoff = (datetime.now() - timedelta(days=RELEVANCE_DAYS)).strftime('%Y-%m-%dT%H:%M:%S')
 
     conn = None  # sqlite3.connect() 失敗時の finally NameError を防ぐ
     try:
@@ -121,7 +124,7 @@ def _get_pending_findings(project_root: str | None) -> list[dict]:
                       END,
                       id DESC
                     LIMIT ?
-                """, (cutoff, cutoff, project_filter, BATCH_FINDINGS_LIMIT)).fetchall()
+                """, (cutoff, relevance_cutoff, project_filter, BATCH_FINDINGS_LIMIT)).fetchall()
             except sqlite3.OperationalError as e:
                 print(f"[batch-review-trigger] DB クエリエラー: {e}", file=sys.stderr)
                 return []
@@ -143,7 +146,7 @@ def _get_pending_findings(project_root: str | None) -> list[dict]:
                       END,
                       id DESC
                     LIMIT ?
-                """, (cutoff, cutoff, BATCH_FINDINGS_LIMIT)).fetchall()
+                """, (cutoff, relevance_cutoff, BATCH_FINDINGS_LIMIT)).fetchall()
             except sqlite3.OperationalError as e:
                 print(f"[batch-review-trigger] DB クエリエラー: {e}", file=sys.stderr)
                 return []

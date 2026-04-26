@@ -7,11 +7,22 @@ A closed-loop PDCA (Plan-Do-Check-Act) system that automatically surfaces past c
 
 **Best for teams already using Claude Code review skills** who want past findings to come back automatically at edit time instead of being forgotten after one review pass.
 
-## At a glance
+## Status
 
-- Re-injects past findings only when the relevant file is being edited
-- Tracks edit activity and triggers batch review at controlled intervals
-- Learns confirmed false-positive patterns and writes durable guidance back to project instructions
+This repo is now usable in **both** of these modes:
+
+- **Claude Code hook mode**: findings are injected automatically by hooks
+- **Codex / manual mode**: the same context injection can be triggered explicitly with a command
+
+That means the core workflow is no longer "hidden in local glue only" -- the implementation-session bridge now lives in this repo.
+
+## At a Glance
+
+- **Store review findings** in SQLite
+- **Re-inject only relevant findings** when editing the same file later
+- **Log learned implementation patterns** from review-fix sessions
+- **Support both hook-based and command-based runtimes**
+- **Keep false-positive learning human-gated**
 
 ## The Problem
 
@@ -42,6 +53,88 @@ Every 5 edits: batch review trigger
      v
 SessionEnd: learned false-positive patterns written to CLAUDE.md
 ```
+
+## Runtime Modes
+
+This repo now supports **two execution styles**:
+
+1. **Claude Code hook mode**
+   - `hooks/pre-tool-inject-findings.py`
+   - `hooks/post-tool-edit-counter.py`
+   - `hooks/session-end-learn.py`
+   - `hooks/implementation-session-detector.js`
+   - `hooks/review-feedback-session-check.js`
+
+2. **Codex / manual command mode**
+   - `scripts/prepare-implementation-context.py`
+   - `scripts/record-rfl-patterns.py`
+
+The key idea is: **Claude can use hooks, while Codex can call the equivalent command explicitly**.
+That means pinned-repo users can understand the whole workflow from this repo alone, without relying on hidden local-only glue for implementation-session activation.
+
+## Quick Start
+
+### 1) Claude Code hook mode
+
+Register the hooks described in `docs/hooks.md`.
+
+Main entrypoints:
+
+- `hooks/pre-tool-inject-findings.py`
+- `hooks/post-tool-edit-counter.py`
+- `hooks/session-end-learn.py`
+- `hooks/implementation-session-detector.js`
+- `hooks/review-feedback-session-check.js`
+
+### 2) Codex / manual mode
+
+Before the first implementation edit for a target file:
+
+```bash
+python scripts/prepare-implementation-context.py \
+  --session-id codex-sess-1 \
+  --cwd C:/path/to/repo \
+  --prompt "sc-rfl この file を修正" \
+  --file-path src/app/main.py
+```
+
+This prints the same context block that the Claude hook path would inject.
+
+### Codex / manual command example
+
+Before implementation:
+
+```bash
+python scripts/prepare-implementation-context.py \
+  --session-id codex-sess-1 \
+  --cwd C:/path/to/repo \
+  --prompt "sc-rfl この file を修正" \
+  --file-path src/app/main.py
+```
+
+This command:
+
+- detects implementation markers such as `sc-rfl` / `/rfl`
+- writes `implementation-session.json`
+- invokes the same PreToolUse injection path that Claude hook mode uses
+- prints the context block to reuse in the current agent turn
+
+## What Lives in This Repo
+
+Included here:
+
+- hook-side context injection logic
+- implementation-session detection
+- learned-pattern logging / summarization
+- Codex/manual bridge command
+- tests for hook-equivalent behavior
+
+Still external today:
+
+- the main `review-feedback.py` CLI / DB producer is still expected at the path pointed to by `REVIEW_FEEDBACK_SCRIPT`
+- default path: `~/.claude/scripts/review-feedback.py`
+
+So this repo now contains the **runtime bridge and reinjection logic**, but not yet a fully vendored producer stack.
 
 ## Architecture
 
@@ -108,14 +201,19 @@ Findings follow a state machine: `pending` -> `accepted` | `rejected_intentional
 
 ```
 claude-review-pdca/
+  CODEX.md                          # Codex-side activation rules
   hooks/
     config.py                       # Shared config (DB path, normalize_git_root)
+    implementation-session-detector.js
     pre-tool-inject-findings.py     # PreToolUse: file-specific finding injection
     post-tool-edit-counter.py       # PostToolUse: edit counting + file tracking
+    review-feedback-session-check.js
     session-end-learn.py            # SessionEnd: FP learning + cleanup + stale GC
   scripts/
     batch-review-trigger.py         # 5-edit batch review coordinator
     backfill-repo-root.py           # Migration: backfill repo_root for legacy data
+    prepare-implementation-context.py
+    record-rfl-patterns.py          # findings -> review-patterns.db bridge
   tests/
     conftest.py                     # Pytest fixtures (in-memory SQLite)
     test_config.py                  # Config module tests
@@ -125,6 +223,7 @@ claude-review-pdca/
     test_batch_review_trigger.py
     test_session_end_learn.py
   docs/
+    auto-pdca-producer-design.md    # sc-rfl / sc-ifr / sc-ir 共通 producer 設計
     design.md                       # System architecture deep-dive
     db-schema.md                    # Full schema + standard queries
     hooks.md                        # Hook implementation specs
@@ -132,6 +231,29 @@ claude-review-pdca/
     references.md                   # Karpathy, Boris Cherny, etc.
   CLAUDE.md                         # Project-specific Claude Code instructions
 ```
+
+## Codex Activation Rule
+
+If an implementation task prompt includes markers such as:
+
+- `sc-rfl`
+- `sc-review-fix-loop`
+- `sc-ui`
+- `sc-frontend-implementation`
+- `sc-tdd`
+- `sc-e2e`
+- `sc-bt`
+- `sc-at`
+- `/review-fix-loop`
+- `/rfl`
+
+then the Codex-side equivalent of hook activation is:
+
+1. identify the edit target file(s)
+2. run `scripts/prepare-implementation-context.py`
+3. use the returned injected context while editing
+
+See `CODEX.md` for the exact rule text.
 
 ## Database Schema (Key Columns)
 

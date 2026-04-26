@@ -148,25 +148,21 @@ class TestGcStaleFindings:
 
 
 class TestSanitizeFpReason:
-    """fp_reason サニタイズのテスト。"""
+    """fp_reason サニタイズのテスト（モジュールレベル関数を直接テスト）。"""
 
     def test_newline_removal(self):
         """改行がスペースに変換される。"""
-        result = learn_mod.main.__code__  # _sanitize_fp_reason は main 内のローカル関数
-        # main 内のローカル関数にアクセスできないため、ロジックを直接テスト
-        reason = "line1\nline2\r\nline3"
-        sanitized = reason.replace("\r\n", " ").replace("\r", " ").replace("\n", " ")
-        assert "\n" not in sanitized
-        assert sanitized == "line1 line2 line3"
+        result = learn_mod._sanitize_fp_reason("line1\nline2\r\nline3")
+        assert "\n" not in result
+        assert result == "line1 line2 line3"
 
     def test_hash_prefix_converted(self):
         """先頭 # が全角 ＃ に変換される。"""
-        reason = "# heading-like"
-        if reason.startswith("#"):
-            reason = "＃" + reason[1:]
-        assert reason.startswith("＃")
+        result = learn_mod._sanitize_fp_reason("# heading-like")
+        assert result.startswith("＃")
+        assert result == "＃ heading-like"
 
     def test_truncation_at_80_chars(self):
         """80文字を超える理由は切り詰められる。"""
-        long_reason = "a" * 100
-        assert len(long_reason[:80]) == 80
+        result = learn_mod._sanitize_fp_reason("a" * 100)
+        assert len(result) == 80

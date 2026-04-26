@@ -8,6 +8,7 @@ import os
 import sqlite3
 import subprocess
 import tempfile
+import hashlib
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -20,7 +21,15 @@ if hasattr(sys.stdout, "reconfigure"):
 if hasattr(sys.stderr, "reconfigure"):
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-from config import DB_PATH, INJECT_STATE_DIR as STATE_DIR, normalize_git_root
+from config import (
+    DB_PATH,
+    IMPLEMENTATION_SESSION_PATH,
+    INJECT_STATE_DIR as STATE_DIR,
+    LEARNED_PATTERN_LOG_PATH,
+    REVIEW_FEEDBACK_SCRIPT,
+    normalize_git_root,
+)
+from pattern_db import get_patterns_for_file, format_injection_text as format_learned_patterns
 INJECT_LIMIT = 8
 FALLBACK_LIMIT = 5   # Phase B: プロジェクト横断 critical のみに絞るため小さめ
 STALE_DAYS = 30
@@ -28,6 +37,45 @@ DEDUP_ROTATION_LIMIT = 2000  # inject-state dedup ファイルの最大行数（
 RELEVANCE_DAYS = 14  # last_relevant_edit 用の短縮ウィンドウ（古い finding でも最近触られたファイルなら注入復活）
 FP_PATTERN_LIMIT = 5  # 学習済み FP パターン表示上限
 MIN_PROJECT_ROOT_DEPTH = 4  # Phase B depth check: git root がこれ未満のパス深さなら他プロジェクト巻き込み防止でスキップ
+IMPLEMENTATION_GATE_TTL_SECONDS = 7200
+
+
+def _is_absolute_path(path: str) -> bool:
+    """Windows/UNC/Unix 風の絶対パスかを判定する。"""
+    return path.startswith("//") or path.startswith("/") or (len(path) >= 3 and path[1] == ":" and path[2] == "/")
+
+
+def _build_file_path_candidates(file_path: str, repo_root: str | None) -> list[str]:
+    """absolute/relative 両系統の候補を返す。
+
+    実DBには relative path が多く、Hook入力は absolute path が多い。
+    双方を候補化して照合することで既存 data を移行なしで拾えるようにする。
+    """
+    normalized = file_path.replace("\\", "/")
+    candidates = {normalized}
+    if not repo_root:
+        return sorted(candidates)
+
+    normalized_root = repo_root.replace("\\", "/").rstrip("/")
+    prefix = normalized_root.lower() + "/"
+    if normalized.lower().startswith(prefix):
+        candidates.add(normalized[len(normalized_root) + 1:])
+    elif not _is_absolute_path(normalized):
+        candidates.add(f"{normalized_root}/{normalized}")
+    return sorted(candidates)
+
+
+def _normalize_file_key(file_path: str, repo_root: str | None) -> str:
+    """session dedup 用に file key を安定化する。"""
+    normalized = file_path.replace("\\", "/")
+    if not repo_root:
+        return normalized
+
+    normalized_root = repo_root.replace("\\", "/").rstrip("/")
+    prefix = normalized_root.lower() + "/"
+    if normalized.lower().startswith(prefix):
+        normalized = normalized[len(normalized_root) + 1:]
+    return f"{normalized_root}::{normalized}"
 
 
 def _load_injected_ids(session_id: str) -> set[int]:
@@ -40,6 +88,8 @@ def _load_injected_ids(session_id: str) -> set[int]:
         if len(lines) > DEDUP_ROTATION_LIMIT:
             # 新しい半分を残す（古い finding は再注入されても SNR 影響は軽微）
             sliced = lines[len(lines) // 2:]
+            print(f"[inject-findings] dedup rotation: {len(lines)} → {len(sliced)} IDs", file=sys.stderr)
+            tmp_path = None
             try:
                 # アトミック書き込み: 並列プロセスの append と競合した場合の
                 # ファイル破損を防ぐ（session-end-learn.py と同じパターン）
@@ -47,17 +97,17 @@ def _load_injected_ids(session_id: str) -> set[int]:
                     mode='w', encoding='utf-8',
                     dir=STATE_DIR, suffix='.tmp', delete=False
                 ) as tmp:
-                    tmp.write("\n".join(sliced) + "\n")
                     tmp_path = tmp.name
+                    tmp.write("\n".join(sliced) + "\n")
                 os.replace(tmp_path, str(state_file))
                 lines = sliced  # 書き込み成功時のみ lines を更新（ファイルとメモリの整合性を保証）
             except OSError:
                 # アトミック書き込み失敗時は temp を削除し、lines は元のまま維持
-                # （ファイル内容と一致する状態を保つ）
-                try:
-                    os.unlink(tmp_path)
-                except (OSError, NameError):
-                    pass
+                if tmp_path:
+                    try:
+                        os.unlink(tmp_path)
+                    except OSError:
+                        pass
         return {int(line) for line in lines if line.isdigit()}
     return set()
 
@@ -76,6 +126,149 @@ def _save_injected_ids(session_id: str, new_ids: set[int]) -> None:
     with open(state_file, "a", encoding="utf-8") as f:
         for id_ in new_ids:
             f.write(f"{id_}\n")
+
+
+def _load_learned_pattern_keys(session_id: str) -> set[str]:
+    """セッション内で既に表示した learned patterns の file key を返す。"""
+    state_file = STATE_DIR / f"{session_id}-learned.txt"
+    if not state_file.exists():
+        return set()
+    return {
+        line.strip()
+        for line in state_file.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    }
+
+
+def _save_learned_pattern_keys(session_id: str, keys: set[str]) -> None:
+    """表示済み learned patterns の file key を append 保存する。"""
+    if not keys:
+        return
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    state_file = STATE_DIR / f"{session_id}-learned.txt"
+    with open(state_file, "a", encoding="utf-8") as f:
+        for key in keys:
+            f.write(f"{key}\n")
+
+
+def _append_learned_pattern_event(
+    session_id: str | None,
+    repo_root: str | None,
+    file_path: str,
+    tool_name: str,
+    learned: list[dict],
+    reviewer: str | None = None,
+) -> None:
+    """learned patterns 注入イベントを append-only JSONL に記録する。"""
+    if not learned:
+        return
+    if os.environ.get("PYTEST_CURRENT_TEST") and os.environ.get("LEARNED_PATTERN_ENABLE_TEST_LOGGING") != "1":
+        return
+
+    normalized_repo_root = repo_root.replace("\\", "/").rstrip("/") if repo_root else None
+    normalized_file_path = file_path.replace("\\", "/")
+    if normalized_repo_root and normalized_file_path.lower().startswith(normalized_repo_root.lower() + "/"):
+        normalized_file_path = normalized_file_path[len(normalized_repo_root) + 1:]
+
+    categories = sorted({str(item.get("category") or "unknown") for item in learned})
+    try:
+        LEARNED_PATTERN_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        event = {
+            "ts": datetime.now().isoformat(timespec="seconds"),
+            "session_id": session_id or "",
+            "reviewer": reviewer,
+            "repo_root": normalized_repo_root,
+            "file_path": normalized_file_path,
+            "tool_name": tool_name,
+            "pattern_count": len(learned),
+            "categories": categories,
+            "pattern_hashes": [
+                hashlib.sha1(str(item.get("pattern_text") or "").encode("utf-8")).hexdigest()[:12]
+                for item in learned
+            ],
+        }
+        with LEARNED_PATTERN_LOG_PATH.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(event, ensure_ascii=False) + "\n")
+    except OSError as e:
+        print(f"[pre-tool-inject-findings] learned pattern log write failed: {e}", file=sys.stderr)
+
+
+def _load_implementation_gate() -> dict | None:
+    """implementation session detector が書いたメタデータを読む。"""
+    try:
+        if not IMPLEMENTATION_SESSION_PATH.exists():
+            return None
+        data = json.loads(IMPLEMENTATION_SESSION_PATH.read_text(encoding="utf-8"))
+        if isinstance(data, dict):
+            return data
+    except (OSError, json.JSONDecodeError):
+        return None
+    return None
+
+
+def _get_learned_pattern_reviewer(
+    session_id: str | None,
+    repo_root: str | None,
+    cwd: str | None = None,
+) -> str | None:
+    """implementation gate から learned-pattern 注入の reviewer 相当を推定する。"""
+    gate = _load_implementation_gate()
+    if not gate:
+        return None
+
+    gate_session_id = str(gate.get("session_id") or gate.get("sessionId") or "")
+    gate_repo_root = str(gate.get("repo_root") or gate.get("repoRoot") or "").replace("\\", "/").rstrip("/")
+    normalized_repo_root = (repo_root or "").replace("\\", "/").rstrip("/")
+    normalized_cwd = (cwd or "").replace("\\", "/").rstrip("/")
+    if not (
+        (session_id and gate_session_id and session_id == gate_session_id)
+        or (gate_repo_root and normalized_repo_root and gate_repo_root == normalized_repo_root)
+        or (gate_repo_root and normalized_cwd and normalized_cwd.startswith(gate_repo_root))
+    ):
+        return None
+
+    matched_markers = gate.get("matched_markers") or gate.get("matchedMarkers") or []
+    if not isinstance(matched_markers, list) or not matched_markers:
+        return None
+    marker = str(matched_markers[0]).strip()
+    return marker or None
+
+
+def _should_inject_learned_patterns(
+    session_id: str | None,
+    repo_root: str | None,
+    cwd: str | None = None,
+) -> bool:
+    """implementation 文脈が有効な session/repo のときだけ learned patterns を許可する。"""
+    gate = _load_implementation_gate()
+    if not gate:
+        return False
+
+    gate_session_id = gate.get("session_id") or gate.get("sessionId") or ""
+    gate_repo_root = str(gate.get("repo_root") or gate.get("repoRoot") or "").replace("\\", "/").rstrip("/")
+    normalized_repo_root = (repo_root or "").replace("\\", "/").rstrip("/")
+    normalized_cwd = (cwd or "").replace("\\", "/").rstrip("/")
+
+    if session_id and gate_session_id and session_id == gate_session_id:
+        if not gate_repo_root:
+            return True
+        return gate_repo_root == normalized_repo_root
+
+    detected_at = gate.get("detected_at") or gate.get("detectedAt")
+    if not detected_at:
+        return False
+    try:
+        age_seconds = (datetime.now() - datetime.fromisoformat(str(detected_at))).total_seconds()
+    except ValueError:
+        return False
+    if age_seconds < 0 or age_seconds > IMPLEMENTATION_GATE_TTL_SECONDS:
+        return False
+
+    if gate_repo_root and normalized_repo_root:
+        return gate_repo_root == normalized_repo_root
+    if gate_repo_root and normalized_cwd:
+        return normalized_cwd.startswith(gate_repo_root)
+    return False
 
 
 def _update_injection_tracking(conn: sqlite3.Connection, findings: list[dict], now: str) -> None:
@@ -103,10 +296,14 @@ def _get_project_root(file_path: str, cwd: str | None = None) -> str | None:
     """編集対象ファイルの git リポジトリルートを取得する（Phase B フィルタ用）。
     file_path の親ディレクトリが存在しない場合（Write で新規ファイル作成時）は
     cwd をフォールバックとして使用する。"""
+    base_dir = Path(cwd) if cwd else Path.cwd()
     # 新規ファイル作成時: 親ディレクトリがまだ存在しない可能性がある
-    git_cwd = str(Path(file_path).parent)
+    parent_path = Path(file_path).parent
+    if not parent_path.is_absolute():
+        parent_path = (base_dir / parent_path).resolve()
+    git_cwd = str(parent_path)
     if not Path(git_cwd).exists():
-        git_cwd = cwd if cwd else str(Path.cwd())
+        git_cwd = str(base_dir)
     try:
         result = subprocess.run(
             ["git", "-C", git_cwd, "rev-parse", "--show-toplevel"],
@@ -116,15 +313,26 @@ def _get_project_root(file_path: str, cwd: str | None = None) -> str | None:
             return normalize_git_root(result.stdout)
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
+    current = Path(git_cwd).resolve()
+    while True:
+        if (current / ".git").exists():
+            return str(current).replace("\\", "/")
+        if current.parent == current:
+            break
+        current = current.parent
     # git 管理外ファイルはプロジェクト判定不能 → None を返して Phase B をスキップ
     return None
 
 
 def get_fp_patterns(conn: sqlite3.Connection, repo_root: str | None) -> list[dict]:
     """学習済み FP パターン（ユーザーが2回以上 dismiss 承認したカテゴリ+理由）を取得する。
-    注入テキスト末尾に追加して、Claude が同パターンの新規指摘を慎重に判断できるようにする。"""
+    注入テキスト末尾に追加して、Claude が同パターンの新規指摘を慎重に判断できるようにする。
+    注: dismissed=1 の finding は _gc_stale_findings (session-end-learn.py) の stale GC 対象外
+    （AND dismissed = 0 条件あり）のため、resolution='pending' で安全にフィルタできる。"""
     try:
         if repo_root:
+            # dismissed=1 + resolution='pending' = ユーザーがFP認定したが修正は不要と判断した状態
+            # fixedに遷移したFPは除外（修正された=本物の問題だった可能性）
             rows = conn.execute("""
                 SELECT category, fp_reason, COUNT(*) AS cnt
                 FROM findings
@@ -188,18 +396,29 @@ def get_findings(
     # --- Phase A: ファイル特化クエリ ---
     # repo_root でリポジトリスコープを分離（クロスコンタミネーション防止）
     # ⚠️ dismissed カラムは Phase 1 ALTER TABLE 完了後に有効（追加前は OperationalError をスキップして空を返す）
-    normalized_path = file_path.replace("\\", "/")
     repo_root = _get_project_root(file_path, cwd=cwd)
+    path_candidates = _build_file_path_candidates(file_path, repo_root)
+    path_placeholders = ",".join("?" * len(path_candidates))
     try:
         # repo_root が取得できた場合はスコープフィルタ追加、なければ従来通り
         # 鮮度条件: created_at >= 30日以内 OR last_relevant_edit >= 14日以内
         # last_relevant_edit カラムが未追加の場合は COALESCE で created_at 以前の値にフォールバック
+        # 名前付きパラメータで順序依存を排除（保守性向上: 条件追加時のバインド変数ずれを防止）
+        # Phase A/B 共通の鮮度条件（Phase B の fallback_params にも :cutoff, :relevance_cutoff を含める前提）
         freshness_clause = "(created_at >= ? OR COALESCE(last_relevant_edit, '2000-01-01') >= ?)"
         if repo_root:
+            params = (
+                *path_candidates,
+                repo_root,
+                cutoff,
+                relevance_cutoff,
+                repo_root,
+                INJECT_LIMIT,
+            )
             rows = conn.execute(f"""
                 SELECT id, severity, category, finding_summary
                 FROM findings
-                WHERE replace(file_path, '\\', '/') = ?
+                WHERE replace(file_path, '\\', '/') IN ({path_placeholders})
                   AND (replace(COALESCE(repo_root, ''), '\\', '/') = ? OR repo_root IS NULL)
                   AND dismissed = 0
                   AND resolution = 'pending'
@@ -223,15 +442,21 @@ def get_findings(
                   END,
                   id DESC
                 LIMIT ?
-            """, (normalized_path, repo_root, cutoff, relevance_cutoff, repo_root, INJECT_LIMIT)).fetchall()
+            """, params).fetchall()
         else:
             # repo_root なし（git 管理外）: NOT EXISTS に repo_root スコープなし
             # 制限: 他プロジェクトの同名 finding が accepted/fixed の場合に除外される可能性がある
             # git 管理外ファイルは稀なため、この制限は許容する
+            params = (
+                *path_candidates,
+                cutoff,
+                relevance_cutoff,
+                INJECT_LIMIT,
+            )
             rows = conn.execute(f"""
                 SELECT id, severity, category, finding_summary
                 FROM findings
-                WHERE replace(file_path, '\\', '/') = ?
+                WHERE replace(file_path, '\\', '/') IN ({path_placeholders})
                   AND dismissed = 0
                   AND resolution = 'pending'
                   AND severity IN ('critical', 'high', 'warning')
@@ -252,7 +477,7 @@ def get_findings(
                   END,
                   id DESC
                 LIMIT ?
-            """, (normalized_path, cutoff, relevance_cutoff, INJECT_LIMIT)).fetchall()
+            """, params).fetchall()
     except sqlite3.OperationalError:
         return [], False, repo_root  # dismissed カラム未追加時はスキップ
 
@@ -282,6 +507,13 @@ def get_findings(
     try:
         # Phase A と同様に last_relevant_edit 鮮度条件を適用
         # critical は見逃すと致命的なため、古くても最近関連ファイルが編集されていれば注入する
+        fallback_params = (
+            cutoff,
+            relevance_cutoff,
+            project_filter,
+            project_filter,
+            FALLBACK_LIMIT,
+        )
         fallback_rows = conn.execute(f"""
             SELECT id, severity, category, finding_summary
             FROM findings
@@ -300,7 +532,7 @@ def get_findings(
               )
             ORDER BY id DESC
             LIMIT ?
-        """, (cutoff, relevance_cutoff, project_filter, project_filter, FALLBACK_LIMIT)).fetchall()
+        """, fallback_params).fetchall()
     except sqlite3.OperationalError:
         return [], False, repo_root
 
@@ -334,7 +566,7 @@ def format_injection(
 
     # dismiss コマンドのワンライナー提示（フリクション最小化: コピペ即実行可能）
     ids_csv = ",".join(str(f["id"]) for f in findings)
-    lines.append(f'誤検知なら一括dismiss: python "C:\\Users\\Tenormusica\\.claude\\scripts\\review-feedback.py" dismiss --ids {ids_csv} --no-interactive')
+    lines.append(f'誤検知なら一括dismiss: python "{REVIEW_FEEDBACK_SCRIPT}" dismiss --ids {ids_csv} --no-interactive')
 
     # #3: 学習済み FP パターンセクション（ユーザーが2回以上 dismiss 承認したパターン）
     if fp_patterns:
@@ -402,11 +634,8 @@ def main():
             if findings:
                 outputs.append((fp, findings, is_fallback))
 
-        if not outputs:
-            sys.exit(0)
-
         # FP パターンを1回だけ取得（全ファイル共通で表示。同一 conn を再利用）
-        fp_patterns = get_fp_patterns(conn, first_repo_root)
+        fp_patterns = get_fp_patterns(conn, first_repo_root) if outputs else []
     finally:
         conn.close()
 
@@ -416,6 +645,39 @@ def main():
         injection_texts.append(format_injection(fp, findings, is_fallback, fp_patterns))
         # FP パターンは最初のファイルにのみ追加（重複表示防止）
         fp_patterns = None
+
+    # PDCA v2: review-patterns.db からの学習済みパターン注入
+    # findings の有無に関わらず、対象ファイルに学習済みパターンがあれば注入する
+    if _should_inject_learned_patterns(session_id, first_repo_root, cwd=cwd):
+        learned_seen = _load_learned_pattern_keys(session_id) if session_id else set()
+        newly_injected_learned: set[str] = set()
+        for fp in file_paths:
+            try:
+                learned_key = _normalize_file_key(fp, first_repo_root)
+                if learned_key in learned_seen:
+                    continue
+                learned = get_patterns_for_file(fp, repo_root=first_repo_root)
+                learned_text = format_learned_patterns(learned)
+                if learned_text:
+                    injection_texts.append(learned_text)
+                    _append_learned_pattern_event(
+                        session_id,
+                        first_repo_root,
+                        fp,
+                        tool_name,
+                        learned,
+                        reviewer=_get_learned_pattern_reviewer(session_id, first_repo_root, cwd=cwd),
+                    )
+                    newly_injected_learned.add(learned_key)
+                    break  # 学習済みパターンは1ファイル分のみ（コンテキスト圧迫防止）
+            except Exception:
+                pass  # review-patterns.db 未作成時は静かにスキップ
+
+        if session_id and newly_injected_learned:
+            _save_learned_pattern_keys(session_id, newly_injected_learned)
+
+    if not injection_texts:
+        sys.exit(0)
 
     # stdout に注入文を出力 → Claude Code がコンテキストに追加する
     print("\n\n".join(injection_texts))

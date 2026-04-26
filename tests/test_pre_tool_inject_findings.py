@@ -21,6 +21,11 @@ inject_mod = importlib.import_module("pre-tool-inject-findings")
 
 _load_injected_ids = inject_mod._load_injected_ids
 _save_injected_ids = inject_mod._save_injected_ids
+_load_learned_pattern_keys = inject_mod._load_learned_pattern_keys
+_save_learned_pattern_keys = inject_mod._save_learned_pattern_keys
+_append_learned_pattern_event = inject_mod._append_learned_pattern_event
+_get_learned_pattern_reviewer = inject_mod._get_learned_pattern_reviewer
+_should_inject_learned_patterns = inject_mod._should_inject_learned_patterns
 _update_injection_tracking = inject_mod._update_injection_tracking
 get_findings = inject_mod.get_findings
 get_fp_patterns = inject_mod.get_fp_patterns
@@ -76,6 +81,134 @@ class TestLoadSaveInjectedIds:
         assert result == {1, 2, 3}
 
 
+class TestLearnedPatternState:
+    """learned patterns の session dedup state テスト。"""
+
+    def test_load_empty_session(self, tmp_path):
+        with patch.object(inject_mod, "STATE_DIR", tmp_path):
+            result = _load_learned_pattern_keys("nonexistent_session")
+        assert result == set()
+
+    def test_save_and_load_roundtrip(self, tmp_path):
+        with patch.object(inject_mod, "STATE_DIR", tmp_path):
+            _save_learned_pattern_keys("test_sess", {"repo::src/a.py", "repo::src/b.py"})
+            result = _load_learned_pattern_keys("test_sess")
+        assert result == {"repo::src/a.py", "repo::src/b.py"}
+
+    def test_append_learned_pattern_event_writes_jsonl(self, tmp_path):
+        log_path = tmp_path / "learned-pattern-injections.jsonl"
+        learned = [
+            {"category": "logic", "pattern_text": "off-by-one", "count": 2},
+            {"category": "security", "pattern_text": "auth token leak", "count": 3},
+        ]
+        with patch.dict("os.environ", {"LEARNED_PATTERN_ENABLE_TEST_LOGGING": "1"}, clear=False):
+            with patch.object(inject_mod, "LEARNED_PATTERN_LOG_PATH", log_path):
+                _append_learned_pattern_event(
+                    session_id="sess1",
+                    repo_root="C:/project",
+                    file_path="C:/project/src/main.py",
+                    tool_name="Edit",
+                    learned=learned,
+                    reviewer="sc-rfl",
+                )
+
+        event = json.loads(log_path.read_text(encoding="utf-8").splitlines()[0])
+        assert event["session_id"] == "sess1"
+        assert event["reviewer"] == "sc-rfl"
+        assert event["repo_root"] == "C:/project"
+        assert event["file_path"] == "src/main.py"
+        assert event["tool_name"] == "Edit"
+        assert event["pattern_count"] == 2
+        assert event["categories"] == ["logic", "security"]
+        assert len(event["pattern_hashes"]) == 2
+
+    def test_append_learned_pattern_event_is_disabled_under_pytest_by_default(self, tmp_path):
+        log_path = tmp_path / "learned-pattern-injections.jsonl"
+        with patch.object(inject_mod, "LEARNED_PATTERN_LOG_PATH", log_path):
+            _append_learned_pattern_event(
+                session_id="sess1",
+                repo_root="C:/project",
+                file_path="C:/project/src/main.py",
+                tool_name="Edit",
+                learned=[{"category": "logic", "pattern_text": "off-by-one"}],
+            )
+
+        assert not log_path.exists()
+
+    def test_get_learned_pattern_reviewer_from_gate(self, tmp_path):
+        gate_file = tmp_path / "implementation-session.json"
+        gate_file.write_text(
+            json.dumps({
+                "session_id": "sess1",
+                "repo_root": "C:/project",
+                "matched_markers": ["sc-rfl", "/rfl"],
+            }),
+            encoding="utf-8",
+        )
+        with patch.object(inject_mod, "IMPLEMENTATION_SESSION_PATH", gate_file):
+            reviewer = _get_learned_pattern_reviewer("sess1", "C:/project")
+        assert reviewer == "sc-rfl"
+
+
+class TestImplementationGate:
+    """implementation session gate テスト。"""
+
+    def test_disabled_when_gate_missing(self, tmp_path):
+        with patch.object(inject_mod, "IMPLEMENTATION_SESSION_PATH", tmp_path / "missing.json"):
+            assert _should_inject_learned_patterns("sess1", "C:/project") is False
+
+    def test_enabled_for_same_session_and_repo(self, tmp_path):
+        gate_file = tmp_path / "implementation-session.json"
+        gate_file.write_text(
+            json.dumps({
+                "session_id": "sess1",
+                "repo_root": "C:/project",
+                "detected_at": "2026-04-10T10:00:00",
+            }),
+            encoding="utf-8",
+        )
+        with patch.object(inject_mod, "IMPLEMENTATION_SESSION_PATH", gate_file):
+            assert _should_inject_learned_patterns("sess1", "C:/project") is True
+
+    def test_disabled_for_same_session_but_other_repo(self, tmp_path):
+        gate_file = tmp_path / "implementation-session.json"
+        gate_file.write_text(
+            json.dumps({
+                "session_id": "sess1",
+                "repo_root": "C:/project-a",
+                "detected_at": "2026-04-10T10:00:00",
+            }),
+            encoding="utf-8",
+        )
+        with patch.object(inject_mod, "IMPLEMENTATION_SESSION_PATH", gate_file):
+            assert _should_inject_learned_patterns("sess1", "C:/project-b") is False
+
+    def test_enabled_for_recent_repo_match_without_session_id(self, tmp_path):
+        gate_file = tmp_path / "implementation-session.json"
+        gate_file.write_text(
+            json.dumps({
+                "repo_root": "C:/project",
+                "detected_at": datetime.now().isoformat(timespec="seconds"),
+            }),
+            encoding="utf-8",
+        )
+        with patch.object(inject_mod, "IMPLEMENTATION_SESSION_PATH", gate_file):
+            assert _should_inject_learned_patterns("", "C:/project") is True
+
+    def test_disabled_when_gate_is_stale(self, tmp_path):
+        gate_file = tmp_path / "implementation-session.json"
+        stale_time = (datetime.now() - timedelta(hours=3)).isoformat(timespec="seconds")
+        gate_file.write_text(
+            json.dumps({
+                "repo_root": "C:/project",
+                "detected_at": stale_time,
+            }),
+            encoding="utf-8",
+        )
+        with patch.object(inject_mod, "IMPLEMENTATION_SESSION_PATH", gate_file):
+            assert _should_inject_learned_patterns("", "C:/project") is False
+
+
 class TestUpdateInjectionTracking:
     """injected_count / last_injected の更新テスト。"""
 
@@ -125,6 +258,29 @@ class TestGetFindings:
         assert is_fallback is False
         severities = {f["severity"] for f in findings}
         assert "info" not in severities
+
+    def test_phase_a_matches_relative_path_rows_for_absolute_input(self, in_memory_db, tmp_path):
+        """absolute 入力でも relative 保存 rows を取得できる。"""
+        conn = in_memory_db
+        conn.executemany("""
+            INSERT INTO findings (session_id, repo_root, reviewer, finding_summary, severity, category, file_path, resolution, dismissed)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, [
+            ("sess1", "C:/project", "ifr", "Relative high", "high", "robustness", "src/app/main.py", "pending", 0),
+            ("sess1", "C:/project", "ifr", "Relative warning", "warning", "cleanup", "src/app/main.py", "pending", 0),
+        ])
+        conn.commit()
+
+        with patch.object(inject_mod, "STATE_DIR", tmp_path):
+            with patch.object(inject_mod, "_get_project_root", return_value="C:/project"):
+                findings, is_fallback, repo_root = get_findings(
+                    "C:/project/src/app/main.py", "test_sess", conn
+                )
+
+        assert is_fallback is False
+        assert repo_root == "C:/project"
+        summaries = {f["finding_summary"] for f in findings}
+        assert summaries == {"Relative high", "Relative warning"}
 
     def test_excludes_dismissed(self, sample_findings, tmp_path):
         """dismissed=1 の findings は除外される。"""
