@@ -218,6 +218,7 @@ claude-review-pdca/
     test_batch_review_trigger.py
     test_session_end_learn.py
   docs/
+    auto-pdca-producer-design.md    # sc-rfl / sc-ifr / sc-ir 共通 producer 設計
     design.md                       # System architecture deep-dive
     db-schema.md                    # Full schema + standard queries
     hooks.md                        # Hook implementation specs
