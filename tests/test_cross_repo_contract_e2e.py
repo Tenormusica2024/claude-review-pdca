@@ -8,6 +8,7 @@ import json
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
+import pytest
 
 
 def _load_module(path: Path, name: str):
@@ -20,11 +21,22 @@ def _load_module(path: Path, name: str):
 
 PDCA_ROOT = Path(__file__).resolve().parent.parent
 PIPELINE_ROOT = PDCA_ROOT.parent / "review-fix-pipeline"
+PIPELINE_AVAILABLE = PIPELINE_ROOT.exists()
 
 producer_mod = _load_module(PDCA_ROOT / "scripts" / "record-review-outcome.py", "pdca_record_review_outcome")
-contract_mod = _load_module(PIPELINE_ROOT / "scripts" / "review_outcome_contract.py", "pipeline_review_outcome_contract")
-output_bridge_mod = _load_module(PIPELINE_ROOT / "scripts" / "review_output_bridge.py", "pipeline_review_output_bridge")
-feedback_bridge_mod = _load_module(PIPELINE_ROOT / "scripts" / "review_feedback_bridge.py", "pipeline_review_feedback_bridge")
+if PIPELINE_AVAILABLE:
+    contract_mod = _load_module(PIPELINE_ROOT / "scripts" / "review_outcome_contract.py", "pipeline_review_outcome_contract")
+    output_bridge_mod = _load_module(PIPELINE_ROOT / "scripts" / "review_output_bridge.py", "pipeline_review_output_bridge")
+    feedback_bridge_mod = _load_module(PIPELINE_ROOT / "scripts" / "review_feedback_bridge.py", "pipeline_review_feedback_bridge")
+else:
+    contract_mod = None
+    output_bridge_mod = None
+    feedback_bridge_mod = None
+
+pytestmark = pytest.mark.skipif(
+    not PIPELINE_AVAILABLE,
+    reason="review-fix-pipeline sibling repo is not available in this checkout",
+)
 
 
 class TestCrossRepoContractE2E:
