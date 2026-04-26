@@ -217,6 +217,8 @@ producer 側では以下に正規化する。
 | `sc-ifr` | `intent-first-review` |
 | `ifr` | `intent-first-review` |
 | `/intent-first-review` | `intent-first-review` |
+| `sc-gr` | `go-robust` |
+| `/go-robust` | `go-robust` |
 | `sc-ir` | `intent-review-light` |
 
 補足:
@@ -421,6 +423,19 @@ producer 方針:
 - `sc-rfl` とほぼ同じ
 - ただし reviewer は `intent-first-review`
 - safe fix と unresolved の両方を扱う
+- **pending はまず feedback 側を主に使い、pattern 学習は急がない**
+- pattern 側へ送るのは、少なくとも `fixed` になった item を優先する
+
+## 2.5 `sc-gr` / `/go-robust`
+
+性質:
+- `/ifr` や `/rfl` で残った要確認を policy ベースで処理する
+- fix の意味は「単なる review 指摘」ではなく「judgment 解消後の実装」
+
+producer 方針:
+- reviewer は `go-robust`
+- **fixed になった resolved item は pattern source として有用**
+- unresolved judgment item は feedback 側には残してよいが、pattern 学習は急がない
 
 ## 3. `sc-ir`
 

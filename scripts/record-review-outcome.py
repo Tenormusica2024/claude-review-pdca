@@ -34,6 +34,9 @@ REVIEWER_ALIASES = {
     "ifr": "intent-first-review",
     "/intent-first-review": "intent-first-review",
     "intent-first-review": "intent-first-review",
+    "sc-gr": "go-robust",
+    "go-robust": "go-robust",
+    "/go-robust": "go-robust",
     "sc-ir": "intent-review-light",
     "intent-review-light": "intent-review-light",
 }
@@ -147,6 +150,12 @@ def should_record_pattern(item: dict, reviewer: str) -> bool:
         return False
     if not item["file_path"]:
         return False
+
+    if reviewer == "intent-first-review":
+        return item["status"] == "fixed"
+
+    if reviewer == "go-robust":
+        return item["status"] == "fixed"
 
     if reviewer == "intent-review-light":
         return item["status"] == "fixed"

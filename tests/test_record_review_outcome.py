@@ -26,6 +26,7 @@ class TestRecordReviewOutcome:
     def test_normalize_reviewer_aliases(self):
         assert producer_mod.normalize_reviewer("sc-rfl") == "review-fix-loop"
         assert producer_mod.normalize_reviewer("sc-ifr") == "intent-first-review"
+        assert producer_mod.normalize_reviewer("sc-gr") == "go-robust"
         assert producer_mod.normalize_reviewer("sc-ir") == "intent-review-light"
 
     def test_build_feedback_and_pattern_findings(self):
@@ -148,7 +149,7 @@ class TestRecordReviewOutcome:
         assert rc == 0
         summary = json.loads(captured.out)
         assert summary["recorded_feedback"] == 1
-        assert summary["recorded_patterns"] == 2
+        assert summary["recorded_patterns"] == 1
         assert summary["judgment_items"] == 2
         assert summary["ignored_items"] == 1
 
@@ -164,4 +165,34 @@ class TestRecordReviewOutcome:
         pattern_kwargs = pattern_call.kwargs
         pattern_findings = pattern_call.args[0]
         assert pattern_kwargs["reviewer"] == "intent-first-review"
-        assert [f["summary"] for f in pattern_findings] == ["pending issue", "fixed issue"]
+        assert [f["summary"] for f in pattern_findings] == ["fixed issue"]
+
+    def test_go_robust_records_fixed_patterns_only(self):
+        items = [
+            {
+                "type": "finding",
+                "summary": "resolved robustness choice",
+                "severity": "warning",
+                "category": "robustness",
+                "file_path": "src/a.py",
+                "status": "fixed",
+                "confidence": "high",
+            },
+            {
+                "type": "finding",
+                "summary": "still needs business input",
+                "severity": "warning",
+                "category": "api-contract",
+                "file_path": "src/b.py",
+                "status": "judgment-required",
+                "confidence": "high",
+                "needs_judgment": True,
+            },
+        ]
+        normalized = [producer_mod.normalize_item(item, "C:/repo") for item in items]
+
+        feedback = producer_mod.build_feedback_findings(normalized, "go-robust")
+        patterns = producer_mod.build_pattern_findings(normalized, "go-robust")
+
+        assert [f["summary"] for f in feedback] == ["still needs business input"]
+        assert [f["summary"] for f in patterns] == ["resolved robustness choice"]

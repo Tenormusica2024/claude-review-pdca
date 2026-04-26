@@ -90,7 +90,7 @@ class TestCrossRepoContractE2E:
         assert rc == 0
         summary = json.loads(captured.out)
         assert summary["recorded_feedback"] == 1
-        assert summary["recorded_patterns"] == 2
+        assert summary["recorded_patterns"] == 1
         assert mock_feedback.call_args.kwargs["reviewer"] == "intent-first-review"
         assert mock_pattern.call_args.kwargs["reviewer"] == "intent-first-review"
 
