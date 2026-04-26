@@ -350,6 +350,17 @@ producer が受け取る中間形式:
   - `onboarding` → `documentation`
   のように **早めに正規化** した方がよい
 
+### `/ifr` markdown bridge の file_path
+
+- legacy markdown 由来の `/ifr` pending は、free-text だけだと `file_path` が落ちることがある
+- bridge 側で
+  - 本文の path-like token
+  - `--target-file`
+  - title / summary の弱いヒント
+  を使う推定を入れると、`install.ps1` や `docs/quickstart-from-fork.md` のような file-specific finding をかなり回収できる
+- ただし 1 本の markdown に複数ファイルの finding を混在させると誤寄せの余地が残るので、
+  中長期的には **structured output / explicit target** に寄せる方がよい
+
 - `feedback_pending`
 - `feedback_fixed`
 - `pattern_candidate`
