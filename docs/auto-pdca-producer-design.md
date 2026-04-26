@@ -318,6 +318,38 @@ producer が受け取る中間形式:
 
 各 item を以下に再分類する:
 
+---
+
+## 実運用で確認できたこと
+
+`gittrend-jp` を使った live-run で、少なくとも以下は確認できた。
+
+### `/ifr` 系
+
+- pending finding は `review-feedback.db` に入る
+- 次回 implementation gate で **直ちに reinjection** される
+- ここでは learned pattern を急がず、まず feedback を効かせる設計でよい
+
+### `review-fix-loop` 系
+
+- fixed finding は `review-patterns.db` に入る
+- ただし learned pattern 注入は **cool-off (`detection_count >= 2`)** を満たしてから行う
+- そのため、1回目の safe fix 直後は pattern が見えなくても正常
+
+### learned pattern 注入
+
+- pattern は file-specific に注入される
+- `README.md` の learned pattern は `README.md` 編集時にだけ見える
+- 逆に、同じ repo 内でも別ファイルには出ない
+
+### taxonomy
+
+- 実運用では reviewer 側カテゴリに `ci` / `onboarding` のような実務ラベルが出やすい
+- pattern 側 taxonomy では alias を持たせ、
+  - `ci` → `test-quality`
+  - `onboarding` → `documentation`
+  のように **早めに正規化** した方がよい
+
 - `feedback_pending`
 - `feedback_fixed`
 - `pattern_candidate`
