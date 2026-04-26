@@ -208,6 +208,7 @@ claude-review-pdca/
     batch-review-trigger.py         # 5-edit batch review coordinator
     backfill-repo-root.py           # Migration: backfill repo_root for legacy data
     prepare-implementation-context.py
+    record-review-outcome.py        # common review outcome -> feedback/pattern producer
     record-rfl-patterns.py          # findings -> review-patterns.db bridge
   tests/
     conftest.py                     # Pytest fixtures (in-memory SQLite)
@@ -216,6 +217,7 @@ claude-review-pdca/
     test_pre_tool_inject_main.py    # Phase A/B injection logic
     test_post_tool_edit_counter.py
     test_batch_review_trigger.py
+    test_record_review_outcome.py
     test_session_end_learn.py
   docs/
     auto-pdca-producer-design.md    # sc-rfl / sc-ifr / sc-ir 共通 producer 設計
