@@ -26,6 +26,7 @@ class TestRecordReviewOutcome:
     def test_normalize_reviewer_aliases(self):
         assert producer_mod.normalize_reviewer("sc-rfl") == "review-fix-loop"
         assert producer_mod.normalize_reviewer("sc-ifr") == "intent-first-review"
+        assert producer_mod.normalize_reviewer("/ifr") == "intent-first-review"
         assert producer_mod.normalize_reviewer("sc-gr") == "go-robust"
         assert producer_mod.normalize_reviewer("sc-ir") == "intent-review-light"
 

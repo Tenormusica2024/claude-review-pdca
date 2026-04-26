@@ -31,6 +31,7 @@ REVIEWER_ALIASES = {
     "/rfl": "review-fix-loop",
     "review-fix-loop": "review-fix-loop",
     "sc-ifr": "intent-first-review",
+    "/ifr": "intent-first-review",
     "ifr": "intent-first-review",
     "/intent-first-review": "intent-first-review",
     "intent-first-review": "intent-first-review",
