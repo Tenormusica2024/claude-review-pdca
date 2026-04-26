@@ -2,6 +2,23 @@
 
 A closed-loop PDCA (Plan-Do-Check-Act) system that automatically surfaces past code review findings during implementation, enabling Claude Code to learn from its own mistakes.
 
+## Status
+
+This repo is now usable in **both** of these modes:
+
+- **Claude Code hook mode**: findings are injected automatically by hooks
+- **Codex / manual mode**: the same context injection can be triggered explicitly with a command
+
+That means the core workflow is no longer "hidden in local glue only" -- the implementation-session bridge now lives in this repo.
+
+## At a Glance
+
+- **Store review findings** in SQLite
+- **Re-inject only relevant findings** when editing the same file later
+- **Log learned implementation patterns** from review-fix sessions
+- **Support both hook-based and command-based runtimes**
+- **Keep false-positive learning human-gated**
+
 ## The Problem
 
 Claude Code's review skills (`/ifr`, `/review-fix-loop`, etc.) detect bugs, design issues, and anti-patterns -- but findings are stored once and forgotten. The next coding session starts from zero, with no memory of past mistakes. A bulk "you have N pending findings" notification at session start is noise; developers ignore it.
@@ -50,6 +67,34 @@ This repo now supports **two execution styles**:
 The key idea is: **Claude can use hooks, while Codex can call the equivalent command explicitly**.
 That means pinned-repo users can understand the whole workflow from this repo alone, without relying on hidden local-only glue for implementation-session activation.
 
+## Quick Start
+
+### 1) Claude Code hook mode
+
+Register the hooks described in `docs/hooks.md`.
+
+Main entrypoints:
+
+- `hooks/pre-tool-inject-findings.py`
+- `hooks/post-tool-edit-counter.py`
+- `hooks/session-end-learn.py`
+- `hooks/implementation-session-detector.js`
+- `hooks/review-feedback-session-check.js`
+
+### 2) Codex / manual mode
+
+Before the first implementation edit for a target file:
+
+```bash
+python scripts/prepare-implementation-context.py \
+  --session-id codex-sess-1 \
+  --cwd C:/path/to/repo \
+  --prompt "sc-rfl この file を修正" \
+  --file-path src/app/main.py
+```
+
+This prints the same context block that the Claude hook path would inject.
+
 ### Codex / manual command example
 
 Before implementation:
@@ -68,6 +113,23 @@ This command:
 - writes `implementation-session.json`
 - invokes the same PreToolUse injection path that Claude hook mode uses
 - prints the context block to reuse in the current agent turn
+
+## What Lives in This Repo
+
+Included here:
+
+- hook-side context injection logic
+- implementation-session detection
+- learned-pattern logging / summarization
+- Codex/manual bridge command
+- tests for hook-equivalent behavior
+
+Still external today:
+
+- the main `review-feedback.py` CLI / DB producer is still expected at the path pointed to by `REVIEW_FEEDBACK_SCRIPT`
+- default path: `~/.claude/scripts/review-feedback.py`
+
+So this repo now contains the **runtime bridge and reinjection logic**, but not yet a fully vendored producer stack.
 
 ## Architecture
 
@@ -134,6 +196,7 @@ Findings follow a state machine: `pending` -> `accepted` | `rejected_intentional
 
 ```
 claude-review-pdca/
+  CODEX.md                          # Codex-side activation rules
   hooks/
     config.py                       # Shared config (DB path, normalize_git_root)
     implementation-session-detector.js
@@ -162,6 +225,29 @@ claude-review-pdca/
     references.md                   # Karpathy, Boris Cherny, etc.
   CLAUDE.md                         # Project-specific Claude Code instructions
 ```
+
+## Codex Activation Rule
+
+If an implementation task prompt includes markers such as:
+
+- `sc-rfl`
+- `sc-review-fix-loop`
+- `sc-ui`
+- `sc-frontend-implementation`
+- `sc-tdd`
+- `sc-e2e`
+- `sc-bt`
+- `sc-at`
+- `/review-fix-loop`
+- `/rfl`
+
+then the Codex-side equivalent of hook activation is:
+
+1. identify the edit target file(s)
+2. run `scripts/prepare-implementation-context.py`
+3. use the returned injected context while editing
+
+See `CODEX.md` for the exact rule text.
 
 ## Database Schema (Key Columns)
 
