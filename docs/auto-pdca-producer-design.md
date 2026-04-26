@@ -361,6 +361,30 @@ producer が受け取る中間形式:
 - ただし 1 本の markdown に複数ファイルの finding を混在させると誤寄せの余地が残るので、
   中長期的には **structured output / explicit target** に寄せる方がよい
 
+### live-run coverage（2026-04-26 時点）
+
+実データで producer を回した public repo:
+
+- `gittrend-jp`
+- `claude-code-hooks`
+- `x-bookmark-gallery`
+- `openclaw-claude-bridge`
+- `x-bookmark-knowledge-pack`
+
+この範囲で少なくとも以下は確認済み:
+
+1. `/ifr review-only -> feedback`
+2. `sc-rfl fixed -> patterns`
+3. `prepare-implementation-context.py` による reinjection
+4. `gittrend-jp` での cool-off 後 learned pattern reinjection
+
+### 現時点の producer 観点の重点課題
+
+- legacy `/ifr` free-text 由来の `file_path` 推定精度
+- judgment item が pattern 側へ混ざるケースの監視
+- pattern 重複と summary 粒度の揺れ
+- category alias をどこまで taxonomy に吸収するか
+
 - `feedback_pending`
 - `feedback_fixed`
 - `pattern_candidate`
