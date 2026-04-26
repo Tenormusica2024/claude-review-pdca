@@ -74,6 +74,8 @@ That means pinned-repo users can understand the whole workflow from this repo al
 
 ## Quick Start
 
+Fork / clone 後の最短導線は `docs/quickstart-from-fork.md` を参照。
+
 ### 1) Claude Code hook mode
 
 Register the hooks described in `docs/hooks.md`.
