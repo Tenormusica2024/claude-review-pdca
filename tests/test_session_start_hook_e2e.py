@@ -58,12 +58,12 @@ def _copy_required_runtime_files(temp_home: Path) -> tuple[Path, Path]:
         temp_home / ".claude" / "scripts" / "review-feedback.py",
     )
     shutil.copy2(
-        GLOBAL_CLAUDE_DIR / "hooks" / "review-feedback-session-check.js",
-        temp_home / ".claude" / "hooks" / "review-feedback-session-check.js",
+        REPO_ROOT / "hooks" / "review-feedback-session-check.js",
+        repo_dir / "hooks" / "review-feedback-session-check.js",
     )
     shutil.copy2(
-        GLOBAL_CLAUDE_DIR / "hooks" / "implementation-session-detector.js",
-        temp_home / ".claude" / "hooks" / "implementation-session-detector.js",
+        REPO_ROOT / "hooks" / "implementation-session-detector.js",
+        repo_dir / "hooks" / "implementation-session-detector.js",
     )
     shutil.copy2(
         REPO_ROOT / "hooks" / "pre-tool-inject-findings.py",
@@ -401,7 +401,7 @@ def test_session_start_hook_and_summary_e2e(e2e_runtime):
     assert "review-fix-loop | src/app/main.py: pending=1, fixed=1, accepted=1" in summary.stdout
 
     hook_result = runtime.node(
-        runtime.temp_home / ".claude" / "hooks" / "review-feedback-session-check.js",
+        runtime.repo_dir / "hooks" / "review-feedback-session-check.js",
         input=json.dumps({"cwd": runtime.repo_root}),
         check=True,
     )
@@ -444,7 +444,7 @@ def test_implementation_gate_and_pretool_learned_patterns_e2e(e2e_runtime):
     assert "[LEARNED PATTERNS]" not in plain_result.stdout
 
     detector_result = runtime.node(
-        runtime.temp_home / ".claude" / "hooks" / "implementation-session-detector.js",
+        runtime.repo_dir / "hooks" / "implementation-session-detector.js",
         input=json.dumps({
             "session_id": "sess-impl",
             "cwd": runtime.repo_root,
@@ -583,7 +583,7 @@ def test_recorded_pattern_reinjected_via_implementation_gate_e2e(e2e_runtime):
         )
 
     runtime.node(
-        runtime.temp_home / ".claude" / "hooks" / "implementation-session-detector.js",
+        runtime.repo_dir / "hooks" / "implementation-session-detector.js",
         input=json.dumps({
             "session_id": "sess-loop",
             "cwd": runtime.repo_root,

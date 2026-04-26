@@ -136,6 +136,29 @@ stdin → JSON (tool_name, tool_input) 受信
 
 ---
 
+## Codex / 手動運用での代替コマンド
+
+Claude Code では hook で自動発火させるが、Codex では同じ処理を**明示コマンド**で代替する。
+
+```bash
+python scripts/prepare-implementation-context.py \
+  --session-id codex-sess-1 \
+  --cwd C:/path/to/repo \
+  --prompt "sc-rfl この file を修正" \
+  --file-path src/app/main.py
+```
+
+このコマンドは:
+
+1. prompt 内の implementation marker（`sc-rfl`, `/rfl` など）を検出
+2. `~/.claude/hooks/implementation-session.json` を更新
+3. `pre-tool-inject-findings.py` に hook payload 相当の JSON を渡す
+4. 同じ注入テキストを stdout に返す
+
+つまり **hook を持たないランタイムでも、PreToolUse 相当を同じロジックで再利用できる**。
+
+---
+
 ## 2. SessionStart: 強化版 pending 通知
 
 現状: 全件カウントのみ通知

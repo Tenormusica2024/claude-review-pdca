@@ -14,6 +14,7 @@ import hashlib
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 from config import (
     ANTHROPIC_VERSION,
@@ -138,6 +139,14 @@ def _load_recent_fallback_events(
     limit: int = GLM_SUPPRESSION_LOOKBACK,
 ) -> list[dict]:
     """JSONL 末尾から直近イベントを読み、必要なら scope で絞る。"""
+    default_log_path = Path.home() / ".claude" / "logs" / "glm-classifier-fallbacks.jsonl"
+    if (
+        os.environ.get("PYTEST_CURRENT_TEST")
+        and os.environ.get("GLM_CLASSIFIER_ENABLE_TEST_LOGGING") != "1"
+        and GLM_FALLBACK_LOG_PATH == default_log_path
+    ):
+        return []
+
     if limit <= 0 or not GLM_FALLBACK_LOG_PATH.exists():
         return []
 

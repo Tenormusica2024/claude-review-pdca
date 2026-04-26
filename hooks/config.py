@@ -2,7 +2,10 @@
 共通設定: 全 hook で共有する定数を一箇所で管理する。
 DB パスやディレクトリパスの変更時に複数ファイルの同時修正を不要にする。
 """
+import os
 from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 # SQLite DB パス（review-feedback.py と共通）
 DB_PATH = Path.home() / ".claude" / "review-feedback.db"
@@ -23,7 +26,13 @@ GLM_HTTP_429_SUPPRESSION_THRESHOLD = 3
 LEARNED_PATTERN_LOG_PATH = GLM_CLASSIFIER_LOG_DIR / "learned-pattern-injections.jsonl"
 
 # review-feedback.py CLI スクリプトパス（dismiss コマンド等で参照）
-REVIEW_FEEDBACK_SCRIPT = str(Path.home() / ".claude" / "scripts" / "review-feedback.py")
+REVIEW_FEEDBACK_SCRIPT = os.environ.get(
+    "REVIEW_FEEDBACK_SCRIPT",
+    str(Path.home() / ".claude" / "scripts" / "review-feedback.py"),
+)
+
+# implementation 文脈ゲート（Claude hook / Codex command 共通）
+IMPLEMENTATION_SESSION_PATH = Path.home() / ".claude" / "hooks" / "implementation-session.json"
 
 # GLM 分類・軽量 hook 用の Z.ai Anthropic 互換 API 設定
 ZAI_ANTHROPIC_BASE_URL = "https://api.z.ai/api/anthropic"

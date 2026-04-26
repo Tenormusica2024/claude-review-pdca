@@ -23,6 +23,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 from config import (
     DB_PATH,
+    IMPLEMENTATION_SESSION_PATH,
     INJECT_STATE_DIR as STATE_DIR,
     LEARNED_PATTERN_LOG_PATH,
     REVIEW_FEEDBACK_SCRIPT,
@@ -36,7 +37,6 @@ DEDUP_ROTATION_LIMIT = 2000  # inject-state dedup ファイルの最大行数（
 RELEVANCE_DAYS = 14  # last_relevant_edit 用の短縮ウィンドウ（古い finding でも最近触られたファイルなら注入復活）
 FP_PATTERN_LIMIT = 5  # 学習済み FP パターン表示上限
 MIN_PROJECT_ROOT_DEPTH = 4  # Phase B depth check: git root がこれ未満のパス深さなら他プロジェクト巻き込み防止でスキップ
-IMPLEMENTATION_SESSION_PATH = Path.home() / ".claude" / "hooks" / "implementation-session.json"
 IMPLEMENTATION_GATE_TTL_SECONDS = 7200
 
 

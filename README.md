@@ -32,6 +32,43 @@ Every 5 edits: batch review trigger
 SessionEnd: learned false-positive patterns written to CLAUDE.md
 ```
 
+## Runtime Modes
+
+This repo now supports **two execution styles**:
+
+1. **Claude Code hook mode**
+   - `hooks/pre-tool-inject-findings.py`
+   - `hooks/post-tool-edit-counter.py`
+   - `hooks/session-end-learn.py`
+   - `hooks/implementation-session-detector.js`
+   - `hooks/review-feedback-session-check.js`
+
+2. **Codex / manual command mode**
+   - `scripts/prepare-implementation-context.py`
+   - `scripts/record-rfl-patterns.py`
+
+The key idea is: **Claude can use hooks, while Codex can call the equivalent command explicitly**.
+That means pinned-repo users can understand the whole workflow from this repo alone, without relying on hidden local-only glue for implementation-session activation.
+
+### Codex / manual command example
+
+Before implementation:
+
+```bash
+python scripts/prepare-implementation-context.py \
+  --session-id codex-sess-1 \
+  --cwd C:/path/to/repo \
+  --prompt "sc-rfl この file を修正" \
+  --file-path src/app/main.py
+```
+
+This command:
+
+- detects implementation markers such as `sc-rfl` / `/rfl`
+- writes `implementation-session.json`
+- invokes the same PreToolUse injection path that Claude hook mode uses
+- prints the context block to reuse in the current agent turn
+
 ## Architecture
 
 ```
@@ -99,12 +136,16 @@ Findings follow a state machine: `pending` -> `accepted` | `rejected_intentional
 claude-review-pdca/
   hooks/
     config.py                       # Shared config (DB path, normalize_git_root)
+    implementation-session-detector.js
     pre-tool-inject-findings.py     # PreToolUse: file-specific finding injection
     post-tool-edit-counter.py       # PostToolUse: edit counting + file tracking
+    review-feedback-session-check.js
     session-end-learn.py            # SessionEnd: FP learning + cleanup + stale GC
   scripts/
     batch-review-trigger.py         # 5-edit batch review coordinator
     backfill-repo-root.py           # Migration: backfill repo_root for legacy data
+    prepare-implementation-context.py
+    record-rfl-patterns.py          # findings -> review-patterns.db bridge
   tests/
     conftest.py                     # Pytest fixtures (in-memory SQLite)
     test_config.py                  # Config module tests
