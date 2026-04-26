@@ -48,7 +48,11 @@ class TestValidateCategory:
         assert validate_category("error-handling") == "robustness"
         assert validate_category("null-safety") == "security"
         assert validate_category("design") == "api-contract"
+        assert validate_category("ci") == "test-quality"
+        assert validate_category("workflow") == "test-quality"
         assert validate_category("docs") == "documentation"
+        assert validate_category("onboarding") == "documentation"
+        assert validate_category("quickstart") == "documentation"
         assert validate_category("a11y") == "ux"
         assert validate_category("complexity") == "maintainability"
 
