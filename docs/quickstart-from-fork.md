@@ -9,6 +9,9 @@
 
 の 2 点を最短で確かめることを目的にする。
 
+> 重要: 現状は **`claude-review-pdca` 単体よりも `review-fix-pipeline` と sibling repo で並べた方が確認しやすい**。  
+> producer / bridge の責務が 2 repo に分かれているため。
+
 ---
 
 ## 推奨ディレクトリ構成

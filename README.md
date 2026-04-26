@@ -7,6 +7,8 @@ A closed-loop PDCA (Plan-Do-Check-Act) system that automatically surfaces past c
 
 **Best for teams already using Claude Code review skills** who want past findings to come back automatically at edit time instead of being forgotten after one review pass.
 
+**Important for forks:** this repo is easiest to evaluate alongside `review-fix-pipeline`, because the current producer / bridge story is still intentionally split across the two repos.
+
 ## Status
 
 This repo is now usable in **both** of these modes:
@@ -75,6 +77,7 @@ That means pinned-repo users can understand the whole workflow from this repo al
 ## Quick Start
 
 Fork / clone 後の最短導線は `docs/quickstart-from-fork.md` を参照。
+※ `bootstrap-pdca-repo.ps1` は **完全セットアップではなく、環境確認 + producer path 補助の stub**。
 
 ### 1) Claude Code hook mode
 
@@ -101,18 +104,6 @@ python scripts/prepare-implementation-context.py \
 ```
 
 This prints the same context block that the Claude hook path would inject.
-
-### Codex / manual command example
-
-Before implementation:
-
-```bash
-python scripts/prepare-implementation-context.py \
-  --session-id codex-sess-1 \
-  --cwd C:/path/to/repo \
-  --prompt "sc-rfl この file を修正" \
-  --file-path src/app/main.py
-```
 
 This command:
 
