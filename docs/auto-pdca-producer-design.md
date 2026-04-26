@@ -385,6 +385,28 @@ producer が受け取る中間形式:
 - pattern 重複と summary 粒度の揺れ
 - category alias をどこまで taxonomy に吸収するか
 
+---
+
+## TODO backlog（2026-04-26 時点）
+
+### 今やる（producer 運用監視）
+
+- legacy `/ifr` free-text の `file_path` 精度を監視
+- judgment contamination を監視
+- pattern 重複を監視
+- taxonomy alias 追加候補を収集
+
+### もう少し live-run を回してから着手
+
+- structured output を producer の第一入力に寄せる
+- repo_root guard を warning から fail-close 条件付きへ強化
+- pattern dedupe 実装を追加
+
+### 後回し
+
+- fork-ready 完全化のための setup 自動化
+- sample workspace / fixture repo の整備
+
 - `feedback_pending`
 - `feedback_fixed`
 - `pattern_candidate`
