@@ -10,7 +10,7 @@
 
 const fs = require("fs");
 const path = require("path");
-const { execSync } = require("child_process");
+const { execFileSync } = require("child_process");
 
 const STATE_PATH = process.env.IMPLEMENTATION_SESSION_PATH || path.join(
   process.env.USERPROFILE || process.env.HOME,
@@ -61,7 +61,7 @@ function detectRepoRoot(cwd) {
   if (!cwd) return "";
   try {
     return normalizePath(
-      execSync(`git -C "${cwd}" rev-parse --show-toplevel`, {
+      execFileSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
         encoding: "utf8",
         timeout: 3000,
       }).trim()
@@ -69,7 +69,7 @@ function detectRepoRoot(cwd) {
   } catch {
     try {
       return normalizePath(
-        execSync("git rev-parse --show-toplevel", {
+        execFileSync("git", ["rev-parse", "--show-toplevel"], {
           cwd,
           encoding: "utf8",
           timeout: 3000,

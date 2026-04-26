@@ -7,7 +7,7 @@
  * repo 内の hook として完結させるため、summary script は __dirname 基準で解決する。
  */
 
-const { execSync } = require("child_process");
+const { execFileSync } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 
@@ -37,7 +37,7 @@ function detectRepoRoot(cwd) {
   if (!cwd) return "";
   try {
     return normalizePath(
-      execSync(`git -C "${cwd}" rev-parse --show-toplevel`, {
+      execFileSync("git", ["-C", cwd, "rev-parse", "--show-toplevel"], {
         encoding: "utf8",
         timeout: 3000,
       }).trim()
@@ -57,6 +57,13 @@ function parseJsonOrNull(raw, label) {
   }
 }
 
+function runPython(scriptPath, args = []) {
+  return execFileSync("python", [scriptPath, ...args], {
+    encoding: "utf8",
+    timeout: 5000,
+  }).trim();
+}
+
 function main() {
   let inputData = "";
   try {
@@ -71,13 +78,11 @@ function main() {
   const contextParts = [];
 
   try {
-    const queryCommand = repoRoot
-      ? `python "${SCRIPT_PATH}" query --resolution pending --repo-root "${repoRoot}" --limit 5`
-      : `python "${SCRIPT_PATH}" query --resolution pending --limit 5`;
-    const result = execSync(queryCommand, {
-      encoding: "utf8",
-      timeout: 5000,
-    }).trim();
+    const queryArgs = ["query", "--resolution", "pending", "--limit", "5"];
+    if (repoRoot) {
+      queryArgs.splice(3, 0, "--repo-root", repoRoot);
+    }
+    const result = runPython(SCRIPT_PATH, queryArgs);
 
     if (result && result !== "[]") {
       const findings = parseJsonOrNull(result, "pending findings") || [];
@@ -114,13 +119,11 @@ function main() {
   }
 
   try {
-    const glmCommand = repoRoot
-      ? `python "${GLM_SUMMARY_SCRIPT_PATH}" --json --limit 5 --repo-root "${repoRoot}"`
-      : `python "${GLM_SUMMARY_SCRIPT_PATH}" --json --limit 5`;
-    const glmResult = execSync(glmCommand, {
-      encoding: "utf8",
-      timeout: 5000,
-    }).trim();
+    const glmArgs = ["--json", "--limit", "5"];
+    if (repoRoot) {
+      glmArgs.push("--repo-root", repoRoot);
+    }
+    const glmResult = runPython(GLM_SUMMARY_SCRIPT_PATH, glmArgs);
     const summary = parseJsonOrNull(glmResult, "glm summary");
 
     if (summary && summary.total > 0) {
@@ -172,13 +175,11 @@ function main() {
   }
 
   try {
-    const learnedCommand = repoRoot
-      ? `python "${LEARNED_PATTERN_SUMMARY_SCRIPT_PATH}" --json --limit 5 --repo-root "${repoRoot}"`
-      : `python "${LEARNED_PATTERN_SUMMARY_SCRIPT_PATH}" --json --limit 5`;
-    const learnedResult = execSync(learnedCommand, {
-      encoding: "utf8",
-      timeout: 5000,
-    }).trim();
+    const learnedArgs = ["--json", "--limit", "5"];
+    if (repoRoot) {
+      learnedArgs.push("--repo-root", repoRoot);
+    }
+    const learnedResult = runPython(LEARNED_PATTERN_SUMMARY_SCRIPT_PATH, learnedArgs);
     const summary = parseJsonOrNull(learnedResult, "learned pattern summary");
 
     if (summary && summary.total > 0 && (summary.recent_count || 0) > 0) {
