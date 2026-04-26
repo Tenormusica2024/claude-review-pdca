@@ -48,6 +48,42 @@
 
 ## 現状整理
 
+## repo 責務分離
+
+この機能は 1 repo で完結しない。責務を以下に分ける。
+
+### `claude-review-pdca`
+
+役割:
+- PDCA persistence / reinjection 基盤
+- `review-feedback.db` / `review-patterns.db` への分流
+- implementation context bridge
+- producer / consumer contract の保存側実装
+
+ここで管理するもの:
+- `record-review-outcome.py` のような producer 本体
+- `prepare-implementation-context.py`
+- findings / learned patterns の注入ロジック
+
+### `review-fix-pipeline`
+
+役割:
+- `/ifr` `/rfl` `/go-robust` 相当の review semantics の正本
+- review result を structured outcome に正規化する source of truth
+- Claude Code / Codex それぞれの review runtime adapter
+
+ここで管理するもの:
+- reviewer 名
+- output contract に出す item の意味
+- safe fix / judgment call / unresolved の判定意味論
+
+### 分離の原則
+
+- review の**意味**は `review-fix-pipeline`
+- review の**保存と再注入**は `claude-review-pdca`
+
+この境界を崩さない。
+
 ### できていること
 
 1. `review-feedback.db`
@@ -86,6 +122,35 @@
 - **producer**: 今回のレビュー結果を次回に使える形で保存する
 
 この設計書は **producer 側**の責務を定義する。
+
+## 1.5. 共通 contract + runtime adapter 分離
+
+Claude Code と Codex は execution model が違うが、
+review findings の意味まで runtime ごとに分岐させない。
+
+守る方針:
+
+1. **review semantics は共通**
+   - severity
+   - auto_fixable
+   - needs_judgment
+   - status
+   - category
+
+2. **runtime 差分は adapter で吸収**
+   - Claude Code adapter: slash command / hook / Agent 前提
+   - Codex adapter: skill / shell / PowerShell / manual bridge 前提
+
+3. **producer は runtime 非依存の payload を受ける**
+   - `sc-rfl` 由来でも
+   - `sc-ifr` 由来でも
+   - Claude runtime でも Codex runtime でも
+   同じ schema に正規化してから保存する
+
+つまり:
+- branch を Claude 用 / Codex 用で恒久分岐しない
+- contract は 1 本
+- adapter は複数本
 
 ## 2. 保存先を 2 系統に分離する
 
@@ -426,7 +491,7 @@ sc-rfl / sc-ifr / sc-ir
     ▼
 structured review outcome payload
     ▼
-record-review-outcome.py   ← 新規共通 producer
+record-review-outcome.py   ← 新規共通 producer (`claude-review-pdca`)
     │
     ├─ normalize reviewer / path / severity / category
     ├─ split: feedback_pending / pattern_candidate / ignore
@@ -434,6 +499,10 @@ record-review-outcome.py   ← 新規共通 producer
     ├─ review-feedback.py record
     └─ record-review-patterns.py   （既存 record-rfl-patterns.py の一般化候補）
 ```
+
+補足:
+- payload を作る責務は `review-fix-pipeline`
+- payload を保存先へ分流する責務は `claude-review-pdca`
 
 ---
 
@@ -552,6 +621,12 @@ producer 側でも dedup が必要。
 - review skill 出力から安定して payload を抽出できるようにする
 - できれば free-text parse 依存を減らす
 
+## Phase 5: review-fix-pipeline integration
+
+- `review-fix-pipeline` 側で structured review outcome を正式 contract 化
+- `sc-rfl` / `sc-ifr` / `sc-ir` から共通 producer 呼び出しへ接続
+- Claude adapter / Codex adapter の差分を明示化
+
 ---
 
 ## 未決事項
@@ -579,6 +654,7 @@ producer 側でも dedup が必要。
 3. `review-feedback.db` と `review-patterns.db` に分流
 4. `sc-ir` だけ stricter 保存ルールにする
 5. false positive は従来どおり HITL のままにする
+6. `review-fix-pipeline` では contract を 1 本に保ち、Claude/Codex 差分は adapter 層に閉じ込める
 
 これで
 
