@@ -86,6 +86,11 @@ def find_duplicate_candidates(content: str, rule: str, *, threshold: float = DEF
     return tuple(sorted(duplicates, key=lambda item: item.score, reverse=True)[:5])
 
 
+def has_exact_rule(content: str, rule: str) -> bool:
+    normalized_rule = normalize_rule_text(rule)
+    return any(normalize_rule_text(line.strip()) == normalized_rule for line in content.splitlines())
+
+
 def format_rule_line(rule: str) -> str:
     stripped = rule.strip()
     if stripped.startswith(('-', '*')):
@@ -154,7 +159,11 @@ def create_proposal(repo_root: str | Path, rule: str, adoption_reason: str, *, r
 
     target = resolution.target
     before = rule_target_resolver._read_text(target)
-    duplicates = find_duplicate_candidates(before, rule, threshold=REFINE_DUPLICATE_THRESHOLD if refine_duplicate else DEFAULT_DUPLICATE_THRESHOLD)
+    duplicates = find_duplicate_candidates(
+        before,
+        rule,
+        threshold=REFINE_DUPLICATE_THRESHOLD if refine_duplicate else DEFAULT_DUPLICATE_THRESHOLD,
+    )
     if duplicates:
         if refine_duplicate:
             after = build_refined_content(before, duplicates[0], rule)
@@ -278,22 +287,44 @@ def apply_proposal(
     if not approved_by_user:
         return ApplyResult(applied=False, target=proposal.target, reason="Apply blocked: --approved-by-user is required.")
     if proposal.status != "proposal-ready" or proposal.action not in {"add", "modify"} or not proposal.target:
-        return ApplyResult(applied=False, target=proposal.target, reason=f"Apply blocked: proposal status is {proposal.status}/{proposal.action}.")
+        return ApplyResult(
+            applied=False,
+            target=proposal.target,
+            reason=f"Apply blocked: proposal status is {proposal.status}/{proposal.action}.",
+        )
     if not proposal.adoption_reason.strip():
         return ApplyResult(applied=False, target=proposal.target, reason="Apply blocked: adoption reason is required.")
 
     target = Path(proposal.target)
     current_content = rule_target_resolver._read_text(target)
+    if has_exact_rule(current_content, proposal.rule):
+        return ApplyResult(
+            applied=False,
+            target=proposal.target,
+            reason="Apply blocked: current target already contains the proposed rule.",
+        )
     duplicates = find_duplicate_candidates(
         current_content,
         proposal.rule,
         threshold=REFINE_DUPLICATE_THRESHOLD if proposal.action == "modify" else DEFAULT_DUPLICATE_THRESHOLD,
     )
     if proposal.action == "add" and duplicates:
-        return ApplyResult(applied=False, target=proposal.target, reason="Apply blocked: current target already contains a likely duplicate rule.")
+        return ApplyResult(
+            applied=False,
+            target=proposal.target,
+            reason="Apply blocked: current target already contains a likely duplicate rule.",
+        )
     if proposal.action == "modify" and not duplicates:
-        return ApplyResult(applied=False, target=proposal.target, reason="Apply blocked: current target no longer contains the rule to refine.")
-    after = build_refined_content(current_content, duplicates[0], proposal.rule) if proposal.action == "modify" else build_updated_content(current_content, proposal.rule)
+        return ApplyResult(
+            applied=False,
+            target=proposal.target,
+            reason="Apply blocked: current target no longer contains the rule to refine.",
+        )
+    after = (
+        build_refined_content(current_content, duplicates[0], proposal.rule)
+        if proposal.action == "modify"
+        else build_updated_content(current_content, proposal.rule)
+    )
     target.write_text(after, encoding="utf-8", newline="\n")
     written_log = log_applied_proposal(proposal, repo_root, source=source, log_path=log_path)
     return ApplyResult(applied=True, target=str(target), reason="Applied after explicit user approval.", log_path=str(written_log))

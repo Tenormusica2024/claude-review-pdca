@@ -287,7 +287,27 @@ class TestProposeRuleUpdate:
         )
 
         assert result.applied is False
-        assert "likely duplicate" in result.reason
+        assert "already contains the proposed rule" in result.reason
+
+    def test_apply_blocks_when_rule_already_applied(self, tmp_path):
+        target = write(tmp_path / "CLAUDE.md", "# Rules\n")
+        proposal = proposal_mod.create_proposal(
+            tmp_path,
+            "Use resolver before rule writes.",
+            "Prevents writing to the wrong rule document.",
+        )
+        target.write_text("# Rules\n\n- Use resolver before rule writes.\n", encoding="utf-8")
+
+        result = proposal_mod.apply_proposal(
+            proposal,
+            tmp_path,
+            approved_by_user=True,
+            source="manual",
+            log_path=tmp_path / "apply-log.jsonl",
+        )
+
+        assert result.applied is False
+        assert "already contains the proposed rule" in result.reason
 
     def test_apply_modify_replaces_current_duplicate_line(self, tmp_path):
         target = write(tmp_path / "CLAUDE.md", "# Rules\n\n- Use resolver before rule writes.\n")
