@@ -66,7 +66,49 @@ class TestRecordReviewOutcome:
         patterns = producer_mod.build_pattern_findings(normalized, "review-fix-loop")
 
         assert [f["summary"] for f in feedback] == ["pending warning"]
-        assert [f["summary"] for f in patterns] == ["pending warning", "fixed robust issue"]
+        assert [f["summary"] for f in patterns] == ["fixed robust issue"]
+
+    def test_review_fix_loop_records_only_safe_pending_patterns(self):
+        items = [
+            {
+                "type": "finding",
+                "summary": "safe auto-fixable pending issue",
+                "severity": "warning",
+                "category": "robustness",
+                "file_path": "src/a.py",
+                "status": "pending",
+                "confidence": "high",
+                "auto_fixable": True,
+                "needs_judgment": False,
+            },
+            {
+                "type": "finding",
+                "summary": "pending issue needing judgment",
+                "severity": "warning",
+                "category": "api-contract",
+                "file_path": "src/b.py",
+                "status": "pending",
+                "confidence": "high",
+                "auto_fixable": True,
+                "needs_judgment": True,
+            },
+            {
+                "type": "finding",
+                "summary": "explicit judgment issue",
+                "severity": "warning",
+                "category": "logic",
+                "file_path": "src/c.py",
+                "status": "judgment-required",
+                "confidence": "high",
+                "auto_fixable": True,
+                "needs_judgment": True,
+            },
+        ]
+        normalized = [producer_mod.normalize_item(item, "C:/repo") for item in items]
+
+        patterns = producer_mod.build_pattern_findings(normalized, "review-fix-loop")
+
+        assert [f["summary"] for f in patterns] == ["safe auto-fixable pending issue"]
 
     def test_sc_ir_is_stricter(self):
         items = [
@@ -197,3 +239,145 @@ class TestRecordReviewOutcome:
 
         assert [f["summary"] for f in feedback] == ["still needs business input"]
         assert [f["summary"] for f in patterns] == ["resolved robustness choice"]
+
+    def test_build_rule_candidates_requires_high_confidence_reason_and_no_judgment(self):
+        items = [
+            {
+                "type": "rule_candidate",
+                "summary": "Use resolver before rule writes.",
+                "adoption_reason": "Prevents writing to the wrong rule document.",
+                "confidence": "high",
+            },
+            {
+                "type": "rule_candidate",
+                "summary": "Needs user decision first.",
+                "adoption_reason": "Business judgment.",
+                "confidence": "high",
+                "needs_judgment": True,
+            },
+            {
+                "type": "rule_candidate",
+                "summary": "No reason.",
+                "confidence": "high",
+            },
+        ]
+        normalized = [producer_mod.normalize_item(item, "C:/repo") for item in items]
+
+        candidates = producer_mod.build_rule_candidates(normalized)
+
+        assert candidates == [
+            {
+                "rule": "Use resolver before rule writes.",
+                "adoption_reason": "Prevents writing to the wrong rule document.",
+            }
+        ]
+
+    def test_main_can_generate_rule_proposals_when_enabled(self, capsys):
+        payload = {
+            "session_id": "sess-1",
+            "repo_root": "C:/repo",
+            "reviewer": "sc-rfl",
+            "items": [
+                {
+                    "type": "rule_candidate",
+                    "summary": "Use resolver before rule writes.",
+                    "adoption_reason": "Prevents writing to the wrong rule document.",
+                    "confidence": "high",
+                },
+                {
+                    "type": "rule_candidate",
+                    "summary": "Needs judgment.",
+                    "adoption_reason": "Business judgment.",
+                    "confidence": "high",
+                    "needs_judgment": True,
+                },
+            ],
+        }
+        ok = subprocess.CompletedProcess(args=["python"], returncode=0, stdout='{"status":"proposal-ready"}', stderr="")
+
+        with patch.object(producer_mod, "run_rule_proposal", return_value=ok) as mock_rule:
+            with patch(
+                "sys.argv",
+                [
+                    "record-review-outcome.py",
+                    "--payload-json", json.dumps(payload, ensure_ascii=False),
+                    "--propose-rules",
+                    "--rule-log-path", "C:/repo/rule-log.jsonl",
+                ],
+            ):
+                rc = producer_mod.main()
+
+        captured = capsys.readouterr()
+        assert rc == 0
+        summary = json.loads(captured.out)
+        assert summary["rule_proposals"] == 1
+        assert summary["ignored_items"] == 1
+        assert summary["rule_proposal_errors"] == []
+        call = mock_rule.call_args
+        assert call.args[0]["rule"] == "Use resolver before rule writes."
+        assert call.kwargs["repo_root"] == "C:/repo"
+        assert call.kwargs["reviewer"] == "review-fix-loop"
+        assert call.kwargs["log_path"] == "C:/repo/rule-log.jsonl"
+
+    def test_rule_candidates_are_ignored_when_proposals_disabled(self, capsys):
+        payload = {
+            "repo_root": "C:/repo",
+            "reviewer": "sc-rfl",
+            "items": [
+                {
+                    "type": "rule_candidate",
+                    "summary": "Use resolver before rule writes.",
+                    "adoption_reason": "Prevents writing to the wrong rule document.",
+                    "confidence": "high",
+                }
+            ],
+        }
+
+        with patch.object(producer_mod, "run_rule_proposal") as mock_rule:
+            with patch(
+                "sys.argv",
+                [
+                    "record-review-outcome.py",
+                    "--payload-json", json.dumps(payload, ensure_ascii=False),
+                ],
+            ):
+                rc = producer_mod.main()
+
+        captured = capsys.readouterr()
+        assert rc == 0
+        summary = json.loads(captured.out)
+        assert summary["rule_proposals"] == 0
+        assert summary["ignored_items"] == 1
+        mock_rule.assert_not_called()
+
+    def test_rule_candidate_without_repo_root_reports_skip_error(self, capsys):
+        payload = {
+            "reviewer": "sc-rfl",
+            "items": [
+                {
+                    "type": "rule_candidate",
+                    "summary": "Use resolver before rule writes.",
+                    "adoption_reason": "Prevents writing to the wrong rule document.",
+                    "confidence": "high",
+                }
+            ],
+        }
+
+        with patch.object(producer_mod, "detect_repo_root", return_value=None):
+            with patch.object(producer_mod, "run_rule_proposal") as mock_rule:
+                with patch(
+                    "sys.argv",
+                    [
+                        "record-review-outcome.py",
+                        "--payload-json", json.dumps(payload, ensure_ascii=False),
+                        "--propose-rules",
+                    ],
+                ):
+                    rc = producer_mod.main()
+
+        captured = capsys.readouterr()
+        assert rc == 0
+        summary = json.loads(captured.out)
+        assert summary["rule_proposals"] == 1
+        assert summary["rule_proposal_errors"] == ["rule proposal skipped: repo_root is required"]
+        mock_rule.assert_not_called()

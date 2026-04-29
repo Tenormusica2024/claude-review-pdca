@@ -111,6 +111,7 @@ def normalize_item(item: dict, repo_root: str | None) -> dict:
         "type": str(item.get("type") or "finding").strip(),
         "title": str(item.get("title") or "").strip(),
         "summary": summary,
+        "adoption_reason": str(item.get("adoption_reason") or item.get("reason") or "").strip(),
         "severity": severity,
         "category": category,
         "file_path": file_path,
@@ -120,6 +121,18 @@ def normalize_item(item: dict, repo_root: str | None) -> dict:
         "needs_judgment": bool(item.get("needs_judgment")),
         "confidence": confidence,
     }
+
+
+def should_propose_rule(item: dict) -> bool:
+    if item["type"] not in {"rule_candidate", "rule-promotion-candidate"}:
+        return False
+    if not item["summary"]:
+        return False
+    if item["needs_judgment"]:
+        return False
+    if CONFIDENCE_RANK.get(item["confidence"], 0) < CONFIDENCE_RANK["high"]:
+        return False
+    return bool(item["adoption_reason"])
 
 
 def should_record_feedback(item: dict, reviewer: str) -> bool:
@@ -161,7 +174,13 @@ def should_record_pattern(item: dict, reviewer: str) -> bool:
     if reviewer == "intent-review-light":
         return item["status"] == "fixed"
 
-    return item["status"] in {"fixed", "pending", "judgment-required"}
+    if item["status"] == "fixed":
+        return True
+
+    if item["status"] == "pending":
+        return item["auto_fixable"] and not item["needs_judgment"]
+
+    return False
 
 
 def build_feedback_findings(items: list[dict], reviewer: str) -> list[dict]:
@@ -190,6 +209,18 @@ def build_pattern_findings(items: list[dict], reviewer: str) -> list[dict]:
             "file_path": item["file_path"],
         })
     return findings
+
+
+def build_rule_candidates(items: list[dict]) -> list[dict]:
+    candidates = []
+    for item in items:
+        if not should_propose_rule(item):
+            continue
+        candidates.append({
+            "rule": item["summary"],
+            "adoption_reason": item["adoption_reason"],
+        })
+    return candidates
 
 
 def _default_project_name(repo_root: str | None) -> str | None:
@@ -254,6 +285,34 @@ def run_pattern_record(
     )
 
 
+def run_rule_proposal(
+    candidate: dict,
+    repo_root: str,
+    reviewer: str,
+    log_path: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    cmd = [
+        sys.executable,
+        str(PROJECT_ROOT / "scripts" / "propose-rule-update.py"),
+        "--repo-root", repo_root,
+        "--rule", candidate["rule"],
+        "--adoption-reason", candidate["adoption_reason"],
+        "--source", reviewer,
+        "--log-proposal",
+        "--json",
+    ]
+    if log_path:
+        cmd.extend(["--log-path", log_path])
+    return subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+
 def build_summary(
     items: list[dict],
     reviewer: str,
@@ -261,13 +320,19 @@ def build_summary(
     pattern_findings: list[dict],
     feedback_result: subprocess.CompletedProcess[str] | None,
     pattern_result: subprocess.CompletedProcess[str] | None,
+    rule_candidates: list[dict] | None = None,
+    rule_results: list[subprocess.CompletedProcess[str]] | None = None,
+    rule_proposal_errors: list[str] | None = None,
 ) -> dict:
     feedback_ok = feedback_result is not None and feedback_result.returncode == 0
     pattern_ok = pattern_result is not None and pattern_result.returncode == 0
+    proposed_rule_summaries = {candidate["rule"] for candidate in (rule_candidates or [])}
     routed_items = sum(
         1
         for item in items
-        if should_record_feedback(item, reviewer) or should_record_pattern(item, reviewer)
+        if should_record_feedback(item, reviewer)
+        or should_record_pattern(item, reviewer)
+        or item["summary"] in proposed_rule_summaries
     )
     judgment_items = sum(1 for item in items if item.get("needs_judgment"))
     ignored = max(len(items) - routed_items, 0)
@@ -278,6 +343,12 @@ def build_summary(
         "ignored_items": ignored,
         "feedback_error": None if feedback_ok or feedback_result is None else (feedback_result.stderr or feedback_result.stdout).strip() or "feedback record failed",
         "pattern_error": None if pattern_ok or pattern_result is None else (pattern_result.stderr or pattern_result.stdout).strip() or "pattern record failed",
+        "rule_proposals": len(rule_candidates or []),
+        "rule_proposal_errors": (rule_proposal_errors or []) + [
+            (result.stderr or result.stdout).strip() or "rule proposal failed"
+            for result in (rule_results or [])
+            if result.returncode != 0
+        ],
     }
 
 
@@ -288,6 +359,8 @@ def main() -> int:
     group.add_argument("--payload-file", help="review outcome payload JSON file")
     parser.add_argument("--cwd", default=".", help="repo root detection fallback cwd")
     parser.add_argument("--classify-patterns", action="store_true", help="pattern record 時に category 未設定 items を GLM 分類")
+    parser.add_argument("--propose-rules", action="store_true", help="rule_candidate items から proposal-only rule promotion を生成")
+    parser.add_argument("--rule-log-path", help="rule promotion proposal log path override")
     args = parser.parse_args()
 
     try:
@@ -314,9 +387,12 @@ def main() -> int:
 
     feedback_findings = build_feedback_findings(normalized_items, reviewer)
     pattern_findings = build_pattern_findings(normalized_items, reviewer)
+    rule_candidates = build_rule_candidates(normalized_items) if args.propose_rules else []
 
     feedback_result = None
     pattern_result = None
+    rule_results: list[subprocess.CompletedProcess[str]] = []
+    rule_proposal_errors: list[str] = []
 
     if feedback_findings:
         feedback_result = run_review_feedback_record(
@@ -339,6 +415,21 @@ def main() -> int:
         if pattern_result.stderr:
             print(pattern_result.stderr, file=sys.stderr, end="")
 
+    if rule_candidates and not repo_root:
+        rule_proposal_errors.append("rule proposal skipped: repo_root is required")
+
+    if rule_candidates and repo_root:
+        for candidate in rule_candidates:
+            result = run_rule_proposal(
+                candidate,
+                repo_root=repo_root,
+                reviewer=reviewer,
+                log_path=args.rule_log_path,
+            )
+            rule_results.append(result)
+            if result.stderr:
+                print(result.stderr, file=sys.stderr, end="")
+
     summary = build_summary(
         items=normalized_items,
         reviewer=reviewer,
@@ -346,6 +437,9 @@ def main() -> int:
         pattern_findings=pattern_findings,
         feedback_result=feedback_result,
         pattern_result=pattern_result,
+        rule_candidates=rule_candidates,
+        rule_results=rule_results,
+        rule_proposal_errors=rule_proposal_errors,
     )
     print(json.dumps(summary, ensure_ascii=False))
     return 0

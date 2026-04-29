@@ -39,3 +39,10 @@ python scripts/prepare-implementation-context.py `
 - 明示したい場合は `--marker sc-rfl` のように追加してよい。
 - `REVIEW_FEEDBACK_SCRIPT` 環境変数で `review-feedback.py` の場所を上書きできる。
 - Claude hook runtime では `hooks/implementation-session-detector.js` / `hooks/review-feedback-session-check.js` が同等の役割を担う。
+
+## Rule promotion governance
+
+- Review findings / user corrections を repo ルールへ昇格する場合は、先に `docs/rule-promotion-design.md` を確認する。
+- `CLAUDE.md` / `AGENT.md` / `AGENTS.md` / `CODEX.md` へ直接追記する前に、既存ルール重複・修正/加筆/却下・対象ファイル選定を行う。
+- 初期運用では、rule document への書き込みは必ず HITL 承認後に行う。Codex 判断だけで自動追記しない。
+- `judgment-required` や business/product 判断を含む内容は、承認前に learned pattern / rule として昇格しない。

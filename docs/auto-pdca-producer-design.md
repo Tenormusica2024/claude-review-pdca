@@ -282,6 +282,20 @@ producer が受け取る中間形式:
       "auto_fixable": false,
       "needs_judgment": true,
       "confidence": "medium"
+    },
+    {
+      "type": "rule_candidate",
+      "title": "do not promote unresolved judgment calls",
+      "summary": "Do not record judgment-required findings as learned patterns or repo rules before HITL approval.",
+      "adoption_reason": "Prevents unresolved business/product judgment from contaminating future agent memory.",
+      "severity": "warning",
+      "category": "governance",
+      "file_path": "scripts/record-review-outcome.py",
+      "line": null,
+      "status": "fixed",
+      "auto_fixable": false,
+      "needs_judgment": false,
+      "confidence": "high"
     }
   ],
   "verification": {
@@ -290,6 +304,10 @@ producer が受け取る中間形式:
   }
 }
 ```
+
+`rule_candidate` / `rule-promotion-candidate` は、`record-review-outcome.py --propose-rules` が明示された時だけ `propose-rule-update.py` に流す。
+条件は `confidence = high`、`adoption_reason` あり、`needs_judgment = false`。
+これは proposal / log 生成のみで、rule document への apply 承認ではない。
 
 ---
 

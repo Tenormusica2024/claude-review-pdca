@@ -206,8 +206,11 @@ claude-review-pdca/
     batch-review-trigger.py         # 5-edit batch review coordinator
     backfill-repo-root.py           # Migration: backfill repo_root for legacy data
     prepare-implementation-context.py
+    propose-rule-update.py          # proposal-only HITL diff for rule promotion
     record-review-outcome.py        # common review outcome -> feedback/pattern producer
     record-rfl-patterns.py          # findings -> review-patterns.db bridge
+    rule_promotion_log.py           # append-only audit log for rule promotion decisions
+    rule_target_resolver.py         # safe target selection for rule promotion
   tests/
     conftest.py                     # Pytest fixtures (in-memory SQLite)
     test_config.py                  # Config module tests
@@ -215,10 +218,14 @@ claude-review-pdca/
     test_pre_tool_inject_main.py    # Phase A/B injection logic
     test_post_tool_edit_counter.py
     test_batch_review_trigger.py
+    test_propose_rule_update.py
     test_record_review_outcome.py
+    test_rule_promotion_log.py
+    test_rule_target_resolver.py
     test_session_end_learn.py
   docs/
     auto-pdca-producer-design.md    # sc-rfl / sc-ifr / sc-ir 共通 producer 設計
+    rule-promotion-design.md        # HITL rule promotion to CLAUDE/AGENT/CODEX docs
     design.md                       # System architecture deep-dive
     db-schema.md                    # Full schema + standard queries
     hooks.md                        # Hook implementation specs
