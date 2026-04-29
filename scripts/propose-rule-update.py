@@ -16,6 +16,9 @@ from pathlib import Path
 import rule_target_resolver
 import rule_promotion_log
 
+DEFAULT_DUPLICATE_THRESHOLD = 0.72
+REFINE_DUPLICATE_THRESHOLD = 0.45
+
 
 @dataclass(frozen=True)
 class DuplicateCandidate:
@@ -28,7 +31,7 @@ class DuplicateCandidate:
 class RuleProposal:
     status: str  # proposal-ready | duplicate-suspected | proposal-only
     target: str | None
-    action: str  # add | skip | proposal-only
+    action: str  # add | modify | skip | proposal-only
     rule: str
     adoption_reason: str
     resolver_reason: str
@@ -71,7 +74,7 @@ def similarity(a: str, b: str) -> float:
     return max(overlap, sequence)
 
 
-def find_duplicate_candidates(content: str, rule: str, *, threshold: float = 0.72) -> tuple[DuplicateCandidate, ...]:
+def find_duplicate_candidates(content: str, rule: str, *, threshold: float = DEFAULT_DUPLICATE_THRESHOLD) -> tuple[DuplicateCandidate, ...]:
     duplicates: list[DuplicateCandidate] = []
     for idx, line in enumerate(content.splitlines(), start=1):
         stripped = line.strip()
@@ -102,6 +105,18 @@ def build_updated_content(content: str, rule: str) -> str:
     return f"{content}{separator}\n{heading}\n\n{rule_line}\n"
 
 
+def build_refined_content(content: str, duplicate: DuplicateCandidate, rule: str) -> str:
+    lines = content.splitlines(keepends=True)
+    index = duplicate.line_number - 1
+    if index < 0 or index >= len(lines):
+        raise ValueError(f"duplicate line out of range: {duplicate.line_number}")
+    original = lines[index]
+    newline = "\r\n" if original.endswith("\r\n") else "\n" if original.endswith("\n") else ""
+    indent = re.match(r"^\s*", original).group(0)
+    lines[index] = f"{indent}{format_rule_line(rule)}{newline}"
+    return "".join(lines)
+
+
 def build_diff(target: Path, before: str, after: str) -> str:
     return "".join(difflib.unified_diff(
         before.splitlines(keepends=True),
@@ -112,14 +127,18 @@ def build_diff(target: Path, before: str, after: str) -> str:
 
 
 def proposal_after_content(proposal: RuleProposal) -> str:
-    if proposal.status != "proposal-ready" or proposal.action != "add" or not proposal.target:
-        raise ValueError("Only proposal-ready add proposals can be applied")
+    if proposal.status != "proposal-ready" or proposal.action not in {"add", "modify"} or not proposal.target:
+        raise ValueError("Only proposal-ready add/modify proposals can be applied")
     target = Path(proposal.target)
     before = rule_target_resolver._read_text(target)
+    if proposal.action == "modify":
+        if not proposal.duplicates:
+            raise ValueError("Modify proposal requires a duplicate candidate")
+        return build_refined_content(before, proposal.duplicates[0], proposal.rule)
     return build_updated_content(before, proposal.rule)
 
 
-def create_proposal(repo_root: str | Path, rule: str, adoption_reason: str) -> RuleProposal:
+def create_proposal(repo_root: str | Path, rule: str, adoption_reason: str, *, refine_duplicate: bool = False) -> RuleProposal:
     resolution = rule_target_resolver.resolve_rule_target(repo_root)
     if not resolution.can_write or resolution.target is None:
         return RuleProposal(
@@ -135,8 +154,20 @@ def create_proposal(repo_root: str | Path, rule: str, adoption_reason: str) -> R
 
     target = resolution.target
     before = rule_target_resolver._read_text(target)
-    duplicates = find_duplicate_candidates(before, rule)
+    duplicates = find_duplicate_candidates(before, rule, threshold=REFINE_DUPLICATE_THRESHOLD if refine_duplicate else DEFAULT_DUPLICATE_THRESHOLD)
     if duplicates:
+        if refine_duplicate:
+            after = build_refined_content(before, duplicates[0], rule)
+            return RuleProposal(
+                status="proposal-ready",
+                target=str(target),
+                action="modify",
+                rule=rule.strip(),
+                adoption_reason=adoption_reason.strip(),
+                resolver_reason=resolution.reason,
+                duplicates=duplicates,
+                diff=build_diff(target, before, after),
+            )
         return RuleProposal(
             status="duplicate-suspected",
             target=str(target),
@@ -246,17 +277,23 @@ def apply_proposal(
 ) -> ApplyResult:
     if not approved_by_user:
         return ApplyResult(applied=False, target=proposal.target, reason="Apply blocked: --approved-by-user is required.")
-    if proposal.status != "proposal-ready" or proposal.action != "add" or not proposal.target:
+    if proposal.status != "proposal-ready" or proposal.action not in {"add", "modify"} or not proposal.target:
         return ApplyResult(applied=False, target=proposal.target, reason=f"Apply blocked: proposal status is {proposal.status}/{proposal.action}.")
     if not proposal.adoption_reason.strip():
         return ApplyResult(applied=False, target=proposal.target, reason="Apply blocked: adoption reason is required.")
 
     target = Path(proposal.target)
     current_content = rule_target_resolver._read_text(target)
-    duplicates = find_duplicate_candidates(current_content, proposal.rule)
-    if duplicates:
+    duplicates = find_duplicate_candidates(
+        current_content,
+        proposal.rule,
+        threshold=REFINE_DUPLICATE_THRESHOLD if proposal.action == "modify" else DEFAULT_DUPLICATE_THRESHOLD,
+    )
+    if proposal.action == "add" and duplicates:
         return ApplyResult(applied=False, target=proposal.target, reason="Apply blocked: current target already contains a likely duplicate rule.")
-    after = proposal_after_content(proposal)
+    if proposal.action == "modify" and not duplicates:
+        return ApplyResult(applied=False, target=proposal.target, reason="Apply blocked: current target no longer contains the rule to refine.")
+    after = build_refined_content(current_content, duplicates[0], proposal.rule) if proposal.action == "modify" else build_updated_content(current_content, proposal.rule)
     target.write_text(after, encoding="utf-8", newline="\n")
     written_log = log_applied_proposal(proposal, repo_root, source=source, log_path=log_path)
     return ApplyResult(applied=True, target=str(target), reason="Applied after explicit user approval.", log_path=str(written_log))
@@ -270,12 +307,13 @@ def main() -> int:
     parser.add_argument("--source", default="manual")
     parser.add_argument("--log-proposal", action="store_true")
     parser.add_argument("--log-path")
+    parser.add_argument("--refine-duplicate", action="store_true")
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--approved-by-user", action="store_true")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    proposal = create_proposal(args.repo_root, args.rule, args.adoption_reason)
+    proposal = create_proposal(args.repo_root, args.rule, args.adoption_reason, refine_duplicate=args.refine_duplicate)
     logged_path = log_proposal(proposal, args.repo_root, source=args.source, log_path=args.log_path) if args.log_proposal else None
     apply_result = apply_proposal(
         proposal,

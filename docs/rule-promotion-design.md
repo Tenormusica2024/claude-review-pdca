@@ -163,6 +163,12 @@ Initial mode:
 - If uncertain, output proposal-only.
 - Prefer editing an existing rule over appending a near-duplicate.
 
+Duplicate handling:
+
+- Default behavior for likely duplicates is `duplicate-suspected` + skip.
+- Existing rule modification requires an explicit refine mode and still needs HITL before apply.
+- Refine apply must re-read the target file and replace the current matching line, not blindly trust stale line numbers from proposal generation.
+
 Future no-HITL mode can be enabled only by explicit user decision.
 
 ## Relationship to Existing DBs

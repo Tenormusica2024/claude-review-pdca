@@ -69,6 +69,26 @@ class TestProposeRuleUpdate:
         assert proposal.diff == ""
         assert proposal.duplicates[0].line_number == 3
 
+    def test_refine_duplicate_generates_modify_proposal(self, tmp_path):
+        target = write(
+            tmp_path / "CLAUDE.md",
+            "# Rules\n\n- Use resolver before rule writes.\n",
+        )
+
+        proposal = proposal_mod.create_proposal(
+            tmp_path,
+            "Use the rule target resolver before writing repo rule documents.",
+            "Clarifies the existing resolver rule.",
+            refine_duplicate=True,
+        )
+
+        assert proposal.status == "proposal-ready"
+        assert proposal.action == "modify"
+        assert proposal.target == str(target.resolve())
+        assert proposal.duplicates[0].line_number == 3
+        assert "-- Use resolver before rule writes." in proposal.diff
+        assert "+- Use the rule target resolver before writing repo rule documents." in proposal.diff
+
     def test_no_rule_doc_stays_proposal_only(self, tmp_path):
         proposal = proposal_mod.create_proposal(
             tmp_path,
@@ -268,6 +288,31 @@ class TestProposeRuleUpdate:
 
         assert result.applied is False
         assert "likely duplicate" in result.reason
+
+    def test_apply_modify_replaces_current_duplicate_line(self, tmp_path):
+        target = write(tmp_path / "CLAUDE.md", "# Rules\n\n- Use resolver before rule writes.\n")
+        proposal = proposal_mod.create_proposal(
+            tmp_path,
+            "Use the rule target resolver before writing repo rule documents.",
+            "Clarifies the existing resolver rule.",
+            refine_duplicate=True,
+        )
+        # Simulate a non-conflicting line inserted after proposal generation.
+        target.write_text("# Rules\n\n- Added unrelated rule.\n- Use resolver before rule writes.\n", encoding="utf-8")
+
+        result = proposal_mod.apply_proposal(
+            proposal,
+            tmp_path,
+            approved_by_user=True,
+            source="manual",
+            log_path=tmp_path / "apply-log.jsonl",
+        )
+
+        content = target.read_text(encoding="utf-8")
+        assert result.applied is True
+        assert "- Added unrelated rule." in content
+        assert "- Use resolver before rule writes." not in content
+        assert "- Use the rule target resolver before writing repo rule documents." in content
 
     def test_cli_apply_requires_explicit_approval_flag(self, tmp_path, capsys):
         target = write(tmp_path / "CLAUDE.md", "# Rules\n")
