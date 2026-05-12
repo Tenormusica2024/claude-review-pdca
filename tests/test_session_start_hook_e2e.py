@@ -43,6 +43,9 @@ def _copy_required_runtime_files(temp_home: Path) -> tuple[Path, Path]:
     (repo_dir / "hooks").mkdir(parents=True, exist_ok=True)
     (temp_home / ".claude" / "scripts").mkdir(parents=True, exist_ok=True)
     (temp_home / ".claude" / "hooks").mkdir(parents=True, exist_ok=True)
+    review_feedback_script = GLOBAL_CLAUDE_DIR / "scripts" / "review-feedback.py"
+    if not review_feedback_script.exists():
+        pytest.skip("external review-feedback.py CLI is not available")
 
     shutil.copy2(
         REPO_ROOT / "scripts" / "summarize-glm-fallbacks.py",
@@ -65,7 +68,7 @@ def _copy_required_runtime_files(temp_home: Path) -> tuple[Path, Path]:
         repo_dir / "hooks" / "glm_classifier.py",
     )
     shutil.copy2(
-        GLOBAL_CLAUDE_DIR / "scripts" / "review-feedback.py",
+        review_feedback_script,
         temp_home / ".claude" / "scripts" / "review-feedback.py",
     )
     shutil.copy2(
