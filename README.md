@@ -79,6 +79,7 @@ That means pinned-repo users can understand the whole workflow from this repo al
 ## Quick Start
 
 Fork / clone 後の最短導線は `docs/quickstart-from-fork.md` を参照。
+`review-fix-pipeline` と組み合わせて企業向けの eval / ガードレール設計として説明する場合は `docs/eval-guardrail-reinjection-map-ja.md` を参照。
 ※ `bootstrap-pdca-repo.ps1` は **完全セットアップではなく、環境確認 + producer path 補助の stub**。
 
 ### 1) Claude Code hook mode
