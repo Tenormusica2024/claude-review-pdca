@@ -11,6 +11,7 @@ import sqlite3
 import subprocess
 import sys
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,16 @@ RUN_KWARGS = {
     "encoding": "utf-8",
     "errors": "replace",
 }
+
+
+def _now_iso() -> str:
+    """Return a fresh local timestamp for tests with hook freshness windows."""
+    return datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _now_utc_iso() -> str:
+    """Return a fresh UTC timestamp for JSONL fixtures."""
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def _copy_required_runtime_files(temp_home: Path) -> tuple[Path, Path]:
@@ -197,9 +208,10 @@ def _seed_review_feedback_db(db_path: Path, repo_root: str) -> None:
 def _seed_glm_fallback_log(temp_home: Path, repo_root: str) -> None:
     log_path = temp_home / ".claude" / "logs" / "glm-classifier-fallbacks.jsonl"
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    ts = _now_utc_iso()
     rows = [
         {
-            "ts": "2026-04-10T00:00:00+00:00",
+            "ts": ts,
             "reason": "http_429",
             "source": "fallback",
             "severity": "warning",
@@ -208,7 +220,7 @@ def _seed_glm_fallback_log(temp_home: Path, repo_root: str) -> None:
             "summary_preview": "first 429",
         },
         {
-            "ts": "2026-04-10T00:00:01+00:00",
+            "ts": ts,
             "reason": "suppressed_http_429",
             "source": "fallback",
             "severity": "warning",
@@ -217,7 +229,7 @@ def _seed_glm_fallback_log(temp_home: Path, repo_root: str) -> None:
             "summary_preview": "suppressed",
         },
         {
-            "ts": "2026-04-10T00:00:02+00:00",
+            "ts": ts,
             "reason": "http_429",
             "source": "fallback",
             "severity": "warning",
@@ -226,7 +238,7 @@ def _seed_glm_fallback_log(temp_home: Path, repo_root: str) -> None:
             "summary_preview": "other reviewer",
         },
         {
-            "ts": "2026-04-10T00:00:03+00:00",
+            "ts": ts,
             "reason": "http_429",
             "source": "fallback",
             "severity": "warning",
@@ -242,6 +254,7 @@ def _seed_glm_fallback_log(temp_home: Path, repo_root: str) -> None:
 
 def _seed_pretool_findings_db(db_path: Path, repo_root: str, file_path: str) -> None:
     conn = sqlite3.connect(db_path)
+    now = _now_iso()
     try:
         conn.executescript(
             """
@@ -258,7 +271,7 @@ def _seed_pretool_findings_db(db_path: Path, repo_root: str, file_path: str) -> 
                 project TEXT,
                 file_path TEXT,
                 score INTEGER,
-                created_at TEXT NOT NULL DEFAULT '2026-04-10T00:00:00',
+                created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%S','now','localtime')),
                 resolved_at TEXT,
                 dismissed INTEGER NOT NULL DEFAULT 0,
                 dismissed_at TEXT,
@@ -274,8 +287,8 @@ def _seed_pretool_findings_db(db_path: Path, repo_root: str, file_path: str) -> 
             """
             INSERT INTO findings (
                 repo_root, reviewer, finding_summary, severity, category, resolution,
-                project, file_path, dismissed, injected_count, last_relevant_edit
-            ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, 0, 0, '2026-04-10T00:00:00')
+                project, file_path, dismissed, injected_count, created_at, last_relevant_edit
+            ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?, 0, 0, ?, ?)
             """,
             (
                 repo_root,
@@ -285,6 +298,8 @@ def _seed_pretool_findings_db(db_path: Path, repo_root: str, file_path: str) -> 
                 "robustness",
                 "claude-review-pdca",
                 file_path,
+                now,
+                now,
             ),
         )
         conn.commit()
@@ -295,9 +310,10 @@ def _seed_pretool_findings_db(db_path: Path, repo_root: str, file_path: str) -> 
 def _seed_learned_pattern_log(temp_home: Path, repo_root: str) -> None:
     log_path = temp_home / ".claude" / "logs" / "learned-pattern-injections.jsonl"
     log_path.parent.mkdir(parents=True, exist_ok=True)
+    ts = _now_iso()
     rows = [
         {
-            "ts": "2026-04-10T00:00:10",
+            "ts": ts,
             "session_id": "sess-impl",
             "repo_root": repo_root,
             "file_path": "src/app/main.py",
@@ -308,7 +324,7 @@ def _seed_learned_pattern_log(temp_home: Path, repo_root: str) -> None:
             "pattern_hashes": ["abc123def456", "def456abc123"],
         },
         {
-            "ts": "2026-04-10T00:00:11",
+            "ts": ts,
             "session_id": "sess-impl",
             "repo_root": repo_root,
             "file_path": "src/app/main.py",
@@ -327,6 +343,7 @@ def _seed_learned_pattern_log(temp_home: Path, repo_root: str) -> None:
 def _seed_patterns_db(temp_home: Path, file_path: str, repo_root: str) -> None:
     db_path = temp_home / ".claude" / "review-patterns.db"
     conn = sqlite3.connect(db_path)
+    now = _now_iso()
     try:
         conn.executescript(
             """
@@ -352,7 +369,7 @@ def _seed_patterns_db(temp_home: Path, file_path: str, repo_root: str) -> None:
             INSERT INTO patterns (
                 category, pattern_text, severity, file_path, repo_root,
                 confidence, detection_count, first_detected, last_detected, source_reviewer
-            ) VALUES (?, ?, ?, ?, ?, 'high', 2, '2026-04-10T00:00:00', '2026-04-10T00:00:00', ?)
+            ) VALUES (?, ?, ?, ?, ?, 'high', 2, ?, ?, ?)
             """,
             (
                 "logic",
@@ -360,6 +377,8 @@ def _seed_patterns_db(temp_home: Path, file_path: str, repo_root: str) -> None:
                 "warning",
                 file_path,
                 repo_root,
+                now,
+                now,
                 "review-fix-loop",
             ),
         )
